@@ -72,6 +72,9 @@ class DirectSunNowcastTests(unittest.TestCase):
         self.assertTrue(nowcast["available"])
         self.assertEqual(nowcast["window_minutes"], 60)
         self.assertIn("not a separate forecast for each neighbourhood", nowcast["scope"])
+        self.assertTrue(nowcast["uncertainty"]["available"])
+        self.assertLessEqual(nowcast["uncertainty"]["lower"], nowcast["probability"])
+        self.assertGreaterEqual(nowcast["uncertainty"]["upper"], nowcast["probability"])
         self.assertEqual([sample["minutes_ahead"] for sample in nowcast["samples"]], [0, 30, 60])
         self.assertGreater(nowcast["samples"][0]["probability"], nowcast["samples"][-1]["probability"])
 
@@ -123,6 +126,8 @@ class DirectSunNowcastTests(unittest.TestCase):
 
         self.assertTrue(weather["nowcast"]["available"])
         self.assertTrue(weather["nowcast"]["model"]["trained"])
+        self.assertTrue(weather["nowcast"]["model"]["bayesian"])
+        self.assertTrue(weather["nowcast"]["uncertainty"]["available"])
         self.assertLessEqual(weather["nowcast"]["probability"], 8)
 
 

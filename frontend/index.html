@@ -199,14 +199,15 @@
       <h2>What this number is saying</h2>
       <p>It is a quick guess about one thing. Can direct sun reach an open spot in Helsinki during the next hour? It looks at now, +30 minutes, and +60 minutes, then averages those three guesses.</p>
       <p>The weather comes from one forecast point in central Helsinki. It cannot tell you that every neighbourhood is sunny. It also cannot see a tree, a nearby building, or a small local cloud over your street.</p>
+      <p class="nowcast-range" id="nowcast-range" hidden></p>
       <details class="nowcast-math">
         <summary>See a small worked example</summary>
-        <p>Imagine 60% total cloud, 40% low cloud, a 35° high sun, and a weak direct radiation signal of 0.25. The model adds those weighted clues into a score of 1.38.</p>
-        <code>chance = 1 / (1 + exp(-1.38)) = 0.80</code>
-        <p>So it would show about an 80% chance before the extra fog, rain, and heavy cloud checks.</p>
-        <h3>What about Bayesian modelling?</h3>
-        <p>This version is not Bayesian yet. It keeps one fixed weight for each clue. Its small L2 penalty is similar to starting with a gentle belief that very large weights are unlikely.</p>
-        <p>A Bayesian version would keep a range of possible weights instead. That would let the app say when it is unsure, not only give one percentage.</p>
+        <p>Imagine 60% total cloud, 40% low cloud, a 35° high sun, and a direct radiation signal of 0.251. The model adds those clues into a score of 3.57.</p>
+        <code>chance = 1 / (1 + exp(-3.57)) = 0.97</code>
+        <p>So it would show about a 97% chance before the extra fog, rain, and heavy cloud checks.</p>
+        <h3>What the range means</h3>
+        <p>This is a Bayesian model now. It keeps a range of believable weights for each clue, not just one fixed weight.</p>
+        <p>The live range covers 90% of the model’s posterior guesses. It is a range about the model, not a full weather confidence range. It cannot include every small local cloud or tree.</p>
       </details>
       <p>The building shadows on the map are worked out separately from the sun angle and building shape. This estimate uses cloud, rain chance, radiation, sun height, and the time of year. It does not use a camera or a sunshine sensor.</p>
     </dialog>

@@ -87,7 +87,7 @@ There are 13,257 daylight rows. The first 8,838 rows teach the model. The last
 4,419 rows are kept aside for checking it later. That last section includes a
 full year, so the check sees winter, spring, summer, and autumn too.
 
-On that held out data it gets 95.2% threshold accuracy and a 0.0395 Brier
+On that held out data it gets 96.6% threshold accuracy and a 0.0258 Brier
 score. A simple always use the average baseline gets 60.5% and 0.2397. Those
 numbers are useful, but they are not a promise about a particular Helsinki
 street. Both the answer and one very strong input come from the same reanalysis
@@ -102,16 +102,16 @@ sigmoid curve.
 ```text
 chance = 1 / (1 + exp(-z))
 
-z = -0.9866
-    - 1.4096 * total_cloud
-    - 0.1914 * low_cloud
-    - 0.6662 * total_cloud * low_cloud
-    - 0.7982 * precipitation_signal
-    - 0.3032 * rain_code
-    + 8.5981 * direct_radiation_fraction
-    + 2.0229 * sin(sun_altitude)
-    - 0.2483 * sin(season)
-    - 0.2357 * cos(season)
+z = -2.8533
+    - 2.6012 * total_cloud
+    + 0.4081 * low_cloud
+    - 1.2060 * total_cloud * low_cloud
+    - 1.2874 * precipitation_signal
+    + 0.0263 * rain_code
+    + 25.3626 * direct_radiation_fraction
+    + 3.4459 * sin(sun_altitude)
+    - 0.3300 * sin(season)
+    + 0.0689 * cos(season)
 ```
 
 Cloud, low cloud, and rain chance are numbers from 0 to 1. For example, 60%
@@ -129,47 +129,65 @@ season_cos = cos(2π * (day_of_year - 1) / 365.2425)
 The season values wrap the year into a circle, so the end of December sits next
 to the start of January.
 
+The weights work together. For example, low cloud has a small positive weight
+on its own, but the total cloud and cloud interaction terms pull the score down.
+That is a correlation in this dataset, not a claim that low cloud brings sun.
+
 Here is a small example. Say it is late July, with 60% total cloud, 40% low
-cloud, 20% rain chance, no rain code, a 35° high sun, and a direct radiation
-fraction of 0.25. The season values for that day are about `-0.278` and
-`-0.961`.
+cloud, 20% rain chance, no rain code, a 35° high sun, and 108 W/m² of direct
+radiation. That gives a radiation fraction of `0.2511`. The season values for
+that day are about `-0.278` and `-0.961`.
 
 ```text
-z = -0.9866 - 1.4096(0.60) - 0.1914(0.40) - 0.6662(0.60)(0.40)
-    - 0.7982(0.20) + 8.5981(0.25) + 2.0229(0.574)
-    - 0.2483(-0.278) - 0.2357(-0.961)
-  = 1.3769
+z = -2.8533 - 2.6012(0.60) + 0.4081(0.40) - 1.2060(0.60)(0.40)
+    - 1.2874(0.20) + 25.3626(0.2511) + 3.4459(0.574)
+    - 0.3300(-0.278) + 0.0689(-0.961)
+  = 3.5718
 
-chance = 1 / (1 + exp(-1.3769)) = 0.798
+chance = 1 / (1 + exp(-3.5718)) = 0.973
 ```
 
-That becomes an 80% chance. The app then has a last sanity check. Fog, rain,
+That becomes a 97% chance. The app then has a last sanity check. Fog, rain,
 and very heavy cloud with almost no radiation can pull that number down before
 it reaches the screen.
 
 ### The Bayesian bit
 
-The model running today is not Bayesian. It learns one fixed weight for each
-clue and returns one number. The trainer starts the feature weights at zero and
-the intercept at the average direct sun rate in the training data. It reads the
-full training set on each of 1,200 steps, with a learning rate of `0.7`.
-
-The L2 setting of `0.001` is close to a simple Bayesian idea. It gently prefers
-weights close to zero until the data gives a reason to move them. You can
-picture a Bayesian version starting with a prior like this:
+The model is now Bayesian logistic regression. It starts with these priors:
 
 ```text
-cloud_weight ~ Normal(0, sigma²)
+intercept ~ Normal(0.3130, 2.5²)
+each feature weight ~ Normal(0, 2.5²)
 ```
 
-Instead of keeping one cloud weight, it would keep a range of believable cloud
-weights. New observations would narrow or move that range. The final answer
-could then say both that direct sun looks likely and how unsure the model is.
-For example, it could show a middle chance with a wide range on a day where the
-forecast inputs disagree.
+`0.3130` is the log odds of direct sun in the training rows. The other prior
+means are zero, so the model does not begin by assuming a huge effect from any
+one clue.
 
-That is not what the app does yet. The L2 penalty is a handy first step, but it
-does not create Bayesian uncertainty or a confidence interval.
+The trainer finds the most likely weights after seeing the data. That point is
+called MAP. It then looks at the curvature around that point and turns it into
+a Gaussian approximation of the posterior.
+
+```text
+weights | data ≈ Normal(MAP weights, inverse negative Hessian)
+```
+
+This is called a Laplace approximation. It is much lighter than running a long
+MCMC chain, which makes it a good fit for this small Python app. Training took
+10 Newton steps on the current three year data set.
+
+For every live forecast row, the app gets a middle probability and a 90% model
+range from that posterior. In the example above, the middle result is 97.3% and
+the 90% model range is 95.9% to 98.2%.
+
+The number on screen averages now, +30 minutes, and +60 minutes. Those three
+rows share the same learned weights, so the app carries the shared covariance
+through that average with a small delta-method calculation. It does not just
+average three separate ranges.
+
+That range only covers uncertainty in the learned weights. It does not know
+whether a new small cloud will arrive above one street, so it is not a full
+weather confidence interval.
 
 To train again with the latest three years of data, run:
 

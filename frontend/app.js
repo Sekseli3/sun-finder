@@ -48,7 +48,7 @@ function initialise() {
     'refresh-rate', 'now-button', 'calendar-reset', 'sun-orb', 'sun-orbit', 'sun-pointer',
     'solar-state', 'solar-altitude', 'solar-detail', 'sunrise', 'sunset',
     'weather-callout', 'weather-glyph', 'weather-title', 'weather-detail', 'clear-sky-toggle',
-    'nowcast-control', 'nowcast-toggle', 'nowcast-info', 'nowcast-dialog', 'close-nowcast', 'legend-shadow-label',
+    'nowcast-control', 'nowcast-toggle', 'nowcast-info', 'nowcast-dialog', 'nowcast-range', 'close-nowcast', 'legend-shadow-label',
     'header-status', 'place-select', 'load-buildings', 'building-status', 'data-note',
     'map-loading', 'map-loading-title', 'map-loading-detail', 'inspector-title',
     'inspector-detail', 'tilt-button', 'locate-button', 'about-button', 'about-dialog',
@@ -484,6 +484,7 @@ function updateWeatherPanel() {
   const weather = state.weather;
   updateClearSkyToggle();
   updateNowcastControl();
+  updateNowcastDialog();
   if (!weather) {
     elements['weather-callout'].dataset.state = 'loading';
     elements['weather-glyph'].textContent = '◌';
@@ -566,6 +567,18 @@ function updateNowcastControl() {
   control.title = availableInThisMode ? '' : 'The direct-sun estimate is available in live mode only.';
 }
 
+function updateNowcastDialog() {
+  const range = directSunNowcastRange(state.weather);
+  const element = elements['nowcast-range'];
+  if (!range) {
+    element.hidden = true;
+    element.textContent = '';
+    return;
+  }
+  element.hidden = false;
+  element.textContent = `For the next hour, the model range is ${range.lower}% to ${range.upper}%.`;
+}
+
 function updateHeaderStatus() {
   const status = elements['header-status'];
   const dot = document.querySelector('.live-dot');
@@ -605,6 +618,14 @@ function directSunNowcastProbability(weather) {
   return weather?.nowcast?.available && Number.isFinite(probability)
     ? Math.round(probability)
     : null;
+}
+
+function directSunNowcastRange(weather) {
+  const uncertainty = weather?.nowcast?.uncertainty;
+  const lower = Number(uncertainty?.lower);
+  const upper = Number(uncertainty?.upper);
+  if (!uncertainty?.available || !Number.isFinite(lower) || !Number.isFinite(upper)) return null;
+  return { lower: Math.round(lower), upper: Math.round(upper) };
 }
 
 function visibleDirectSunNowcastProbability(weather) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train Sunfinder's dependency-free direct-sun logistic-regression model.
+"""Train Sunfinder's dependency-free Bayesian direct-sun model.
 
 The target is the WMO sunshine definition: direct normal irradiance greater
 than 120 W/m². The script uses Open-Meteo's historical weather archive for a
@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -25,13 +24,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.main import HELSINKI_LATITUDE, HELSINKI_LONGITUDE, solar_position
+from backend.bayesian import BayesianLogisticFit, fit_bayesian_logistic, sigmoid
 from backend.nowcast import (
     MODEL_FEATURE_NAMES,
     TRAINED_MODEL_PATH,
     WMO_SUNSHINE_DNI_THRESHOLD,
     direct_radiation_fraction,
     logistic_features,
-    sigmoid,
 )
 
 
@@ -104,25 +103,32 @@ def precipitation_signal(value: Any) -> float:
     return max(0.0, min(1.0, float(value) / 0.3))
 
 
-def train_logistic(rows: list[tuple[list[float], int]], *, iterations: int, learning_rate: float) -> list[float]:
-    weights = [0.0] * (len(MODEL_FEATURE_NAMES) + 1)
-    positive_rate = sum(target for _, target in rows) / len(rows)
-    weights[0] = math.log(max(0.001, positive_rate) / max(0.001, 1 - positive_rate))
-    regularisation = 0.001
-
-    for _ in range(iterations):
-        gradient = [0.0] * len(weights)
-        for features, target in rows:
-            prediction = sigmoid(weights[0] + sum(weight * feature for weight, feature in zip(weights[1:], features)))
-            error = prediction - target
-            gradient[0] += error
-            for index, feature in enumerate(features, start=1):
-                gradient[index] += error * feature
-        sample_count = len(rows)
-        weights[0] -= learning_rate * gradient[0] / sample_count
-        for index in range(1, len(weights)):
-            weights[index] -= learning_rate * (gradient[index] / sample_count + regularisation * weights[index])
-    return weights
+def posterior_artifact(fit: BayesianLogisticFit) -> dict[str, Any]:
+    """Write the compact posterior needed by the live, dependency-free app."""
+    return {
+        "method": "Laplace approximation around the MAP estimate",
+        "credible_interval": 0.90,
+        "prior": {
+            "intercept": {
+                "distribution": "Normal",
+                "mean": round(fit.prior_means[0], 10),
+                "stddev": round(fit.prior_scales[0], 10),
+            },
+            "coefficients": {
+                "distribution": "Normal",
+                "mean": 0.0,
+                "stddev": round(fit.prior_scales[1], 10),
+            },
+        },
+        "covariance": [
+            [round(value, 12) for value in row]
+            for row in fit.covariance
+        ],
+        "fit": {
+            "iterations": fit.iterations,
+            "converged": fit.converged,
+        },
+    }
 
 
 def metrics(rows: list[tuple[list[float], int]], weights: list[float]) -> dict[str, float]:
@@ -151,8 +157,9 @@ def climatology_metrics(rows: list[tuple[list[float], int]], probability: float)
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=1095, help="Historical days to fetch (default: 1095 / three years).")
-    parser.add_argument("--iterations", type=int, default=1200, help="Gradient-descent iterations (default: 1200).")
-    parser.add_argument("--learning-rate", type=float, default=0.7, help="Gradient-descent learning rate (default: 0.7).")
+    parser.add_argument("--iterations", type=int, default=50, help="Maximum Newton steps for the MAP fit (default: 50).")
+    parser.add_argument("--prior-scale", type=float, default=2.5, help="Normal prior standard deviation for feature weights (default: 2.5).")
+    parser.add_argument("--intercept-prior-scale", type=float, default=2.5, help="Normal prior standard deviation for the intercept (default: 2.5).")
     parser.add_argument("--validation-fraction", type=float, default=1 / 3, help="Final chronological fraction reserved for validation (default: one third).")
     parser.add_argument("--output", type=Path, default=TRAINED_MODEL_PATH, help="Output JSON model path.")
     args = parser.parse_args()
@@ -160,20 +167,29 @@ def main() -> None:
         parser.error("--days must be at least 30")
     if not 0 < args.validation_fraction < 0.5:
         parser.error("--validation-fraction must be greater than 0 and less than 0.5")
+    if args.prior_scale <= 0 or args.intercept_prior_scale <= 0:
+        parser.error("Prior scales must be positive")
 
     end_date = datetime.now(UTC).date() - timedelta(days=6)
     start_date = end_date - timedelta(days=args.days - 1)
     rows = fetch_training_rows(start_date, end_date)
     split = max(1, round(len(rows) * (1 - args.validation_fraction)))
     training_rows, validation_rows = rows[:split], rows[split:]
-    weights = train_logistic(training_rows, iterations=args.iterations, learning_rate=args.learning_rate)
+    fit = fit_bayesian_logistic(
+        training_rows,
+        coefficient_prior_scale=args.prior_scale,
+        intercept_prior_scale=args.intercept_prior_scale,
+        max_iterations=args.iterations,
+    )
+    weights = fit.weights
     training_positive_rate = sum(target for _, target in training_rows) / len(training_rows)
     model = {
-        "version": "helsinki-archive-logistic-v2-seasonal",
-        "kind": "logistic regression",
+        "version": "helsinki-archive-bayesian-logistic-v3",
+        "kind": "Bayesian logistic regression",
         "definition": f"Direct normal irradiance above {WMO_SUNSHINE_DNI_THRESHOLD} W/m².",
         "features": list(MODEL_FEATURE_NAMES),
         "weights": [round(weight, 10) for weight in weights],
+        "posterior": posterior_artifact(fit),
         "training": {
             "source": "Open-Meteo Historical Weather API reanalysis",
             "location": "Helsinki, Finland",

@@ -15,11 +15,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from backend.bayesian import (
+    NORMAL_90_PERCENT_Z,
+    posterior_average_probability_interval,
+    posterior_probability_interval,
+)
+
 
 DIRECT_SUN_NOWCAST_VERSION = "weather-baseline-v1"
 DIRECT_SUN_WINDOW_MINUTES = 60
 NOWCAST_HORIZONS_MINUTES = (0, 30, 60)
 WMO_SUNSHINE_DNI_THRESHOLD = 120
+POSTERIOR_CREDIBLE_LEVEL = 0.90
 DIRECT_SUN_NOWCAST_SCOPE = (
     "One city level estimate for an open point, based on a fixed Helsinki forecast location. "
     "It is not a separate forecast for each neighbourhood."
@@ -56,13 +63,14 @@ def direct_sun_nowcast(
         raise ValueError("now must be timezone-aware")
 
     samples: list[dict[str, Any]] = []
+    posterior_feature_rows: list[list[float]] = []
     for minutes_ahead in NOWCAST_HORIZONS_MINUTES:
         target = now + timedelta(minutes=minutes_ahead)
         forecast = hourly_conditions_near(hourly, target) or {}
         if minutes_ahead == 0:
             forecast = {**forecast, **current}
         altitude = solar_altitude_at(target)
-        probability = direct_sun_probability(
+        estimate, posterior_features = _direct_sun_estimate(
             sun_altitude=altitude,
             day_of_year=target.timetuple().tm_yday,
             cloud_cover=forecast.get("cloud_cover"),
@@ -72,23 +80,41 @@ def direct_sun_nowcast(
             direct_radiation=forecast.get("direct_radiation"),
             direct_normal_irradiance=forecast.get("direct_normal_irradiance"),
         )
+        if posterior_features is not None:
+            posterior_feature_rows.append(posterior_features)
         samples.append(
             {
                 "minutes_ahead": minutes_ahead,
                 "forecast_at": target.isoformat(),
-                "probability": probability,
+                "probability": estimate["probability"],
                 "sun_altitude": round(altitude, 1),
                 "cloud_cover": integer_or_none(forecast.get("cloud_cover")),
+                **(
+                    {
+                        "model_range": {
+                            "lower": estimate["lower"],
+                            "upper": estimate["upper"],
+                        }
+                    }
+                    if estimate["lower"] is not None and estimate["upper"] is not None
+                    else {}
+                ),
             }
         )
 
     probability = round(sum(sample["probability"] for sample in samples) / len(samples))
+    uncertainty = direct_sun_average_uncertainty(
+        feature_rows=posterior_feature_rows,
+        expected_rows=len(samples),
+        point_probability=probability,
+    )
     return {
         "available": True,
         "probability": probability,
         "window_minutes": DIRECT_SUN_WINDOW_MINUTES,
         "label": probability_label(probability),
         "samples": samples,
+        "uncertainty": uncertainty,
         "model": direct_sun_model_metadata(),
         "scope": DIRECT_SUN_NOWCAST_SCOPE,
         "note": "Estimate for an open point. Nearby buildings, trees, and a changing local sky can still block direct sun.",
@@ -102,13 +128,75 @@ def unavailable_direct_sun_nowcast(reason: str) -> dict[str, Any]:
         "window_minutes": DIRECT_SUN_WINDOW_MINUTES,
         "label": "Direct-sun estimate unavailable",
         "samples": [],
+        "uncertainty": {
+            "available": False,
+            "level": POSTERIOR_CREDIBLE_LEVEL,
+            "lower": None,
+            "upper": None,
+            "note": "There is no model range while the direct-sun estimate is unavailable.",
+        },
         "model": direct_sun_model_metadata(),
         "scope": DIRECT_SUN_NOWCAST_SCOPE,
         "note": reason,
     }
 
 
-def direct_sun_probability(
+def direct_sun_average_uncertainty(
+    *,
+    feature_rows: list[list[float]],
+    expected_rows: int,
+    point_probability: int,
+) -> dict[str, Any]:
+    """Return a 90% model range for the complete one-hour estimate."""
+    if len(feature_rows) != expected_rows:
+        return {
+            "available": False,
+            "level": POSTERIOR_CREDIBLE_LEVEL,
+            "lower": None,
+            "upper": None,
+            "note": "There is no model range while the direct-sun estimate is unavailable.",
+        }
+
+    model = load_trained_model()
+    posterior = model.get("posterior") if model is not None else None
+    if not isinstance(posterior, dict):
+        return {
+            "available": False,
+            "level": POSTERIOR_CREDIBLE_LEVEL,
+            "lower": None,
+            "upper": None,
+            "note": "This model does not include posterior uncertainty yet.",
+        }
+    try:
+        _, lower, upper = posterior_average_probability_interval(
+            weights=model["weights"],
+            covariance=posterior["covariance"],
+            feature_rows=feature_rows,
+            z_score=NORMAL_90_PERCENT_Z,
+        )
+    except (KeyError, TypeError, ValueError):
+        return {
+            "available": False,
+            "level": POSTERIOR_CREDIBLE_LEVEL,
+            "lower": None,
+            "upper": None,
+            "note": "The saved model range could not be read.",
+        }
+
+    # The point shown in the interface has conservative fog, rain, and heavy
+    # cloud caps applied. Keep the Bayesian range around that displayed value.
+    lower_percent = round(lower * 100)
+    upper_percent = round(upper * 100)
+    return {
+        "available": True,
+        "level": POSTERIOR_CREDIBLE_LEVEL,
+        "lower": min(lower_percent, point_probability),
+        "upper": max(upper_percent, point_probability),
+        "note": "This range reflects uncertainty in the fitted model weights, not block by block cloud changes.",
+    }
+
+
+def direct_sun_estimate(
     *,
     sun_altitude: float,
     day_of_year: int | None = None,
@@ -118,15 +206,39 @@ def direct_sun_probability(
     precipitation_probability: Any,
     direct_radiation: Any,
     direct_normal_irradiance: Any,
-) -> int:
-    """Return a conservative 0–100 direct-sun probability.
+) -> dict[str, int | None]:
+    """Return a conservative probability and optional Bayesian model range.
 
-    A trained logistic-regression artifact is used when present. The fallback
-    coefficients remain deliberately inspectable, so a deployed service still
-    returns an honest estimate before a calibration artifact has been trained.
+    A Bayesian artifact supplies the posterior interval. The inspectable
+    weather-model fallback remains available before training has run.
     """
+    estimate, _ = _direct_sun_estimate(
+        sun_altitude=sun_altitude,
+        day_of_year=day_of_year,
+        cloud_cover=cloud_cover,
+        low_cloud_cover=low_cloud_cover,
+        weather_code=weather_code,
+        precipitation_probability=precipitation_probability,
+        direct_radiation=direct_radiation,
+        direct_normal_irradiance=direct_normal_irradiance,
+    )
+    return estimate
+
+
+def _direct_sun_estimate(
+    *,
+    sun_altitude: float,
+    day_of_year: int | None = None,
+    cloud_cover: Any,
+    low_cloud_cover: Any,
+    weather_code: Any,
+    precipitation_probability: Any,
+    direct_radiation: Any,
+    direct_normal_irradiance: Any,
+) -> tuple[dict[str, int | None], list[float] | None]:
+    """Return a display estimate and private Bayesian features for aggregation."""
     if not math.isfinite(sun_altitude) or sun_altitude <= 0:
-        return 0
+        return {"probability": 0, "lower": None, "upper": None}, None
 
     cloud = fraction(cloud_cover, fallback=0.65)
     low_cloud = fraction(low_cloud_cover, fallback=cloud)
@@ -138,7 +250,7 @@ def direct_sun_probability(
         direct_normal_irradiance=None,
         fallback=1 - cloud,
     )
-    trained_probability = trained_model_probability(
+    trained_estimate = trained_model_estimate(
         cloud=cloud,
         low_cloud=low_cloud,
         precipitation=precipitation,
@@ -147,12 +259,15 @@ def direct_sun_probability(
         sun_altitude=sun_altitude,
         day_of_year=day_of_year,
     )
-    if trained_probability is not None:
-        return conservative_probability_cap(
-            trained_probability,
-            code,
-            cloud=cloud,
-            radiation_signal=radiation_signal,
+    if trained_estimate is not None:
+        return (
+            conservative_estimate_cap(
+                trained_estimate,
+                code,
+                cloud=cloud,
+                radiation_signal=radiation_signal,
+            ),
+            trained_estimate.get("features"),
         )
 
     radiation_signal = direct_radiation_fraction(
@@ -167,7 +282,40 @@ def direct_sun_probability(
     logit = 2.35 - 3.0 * cloud - 1.25 * low_cloud - 1.2 * precipitation
     logit += 1.6 * (radiation_signal - 0.5)
     probability = sigmoid(logit) * 100
-    return conservative_probability_cap(probability, code, cloud=cloud, radiation_signal=radiation_signal)
+    return (
+        {
+            "probability": conservative_probability_cap(probability, code, cloud=cloud, radiation_signal=radiation_signal),
+            "lower": None,
+            "upper": None,
+        },
+        None,
+    )
+
+
+def direct_sun_probability(
+    *,
+    sun_altitude: float,
+    day_of_year: int | None = None,
+    cloud_cover: Any,
+    low_cloud_cover: Any,
+    weather_code: Any,
+    precipitation_probability: Any,
+    direct_radiation: Any,
+    direct_normal_irradiance: Any,
+) -> int:
+    """Return just the point estimate for callers that do not need a range."""
+    return int(
+        direct_sun_estimate(
+            sun_altitude=sun_altitude,
+            day_of_year=day_of_year,
+            cloud_cover=cloud_cover,
+            low_cloud_cover=low_cloud_cover,
+            weather_code=weather_code,
+            precipitation_probability=precipitation_probability,
+            direct_radiation=direct_radiation,
+            direct_normal_irradiance=direct_normal_irradiance,
+        )["probability"]
+    )
 
 
 def direct_sun_model_metadata() -> dict[str, Any]:
@@ -177,12 +325,17 @@ def direct_sun_model_metadata() -> dict[str, Any]:
             "version": DIRECT_SUN_NOWCAST_VERSION,
             "kind": "weather-model baseline",
             "trained": False,
+            "bayesian": False,
             "definition": f"Direct normal irradiance above {WMO_SUNSHINE_DNI_THRESHOLD} W/m².",
         }
+    posterior = model.get("posterior")
     return {
         "version": model["version"],
         "kind": model["kind"],
         "trained": True,
+        "bayesian": isinstance(posterior, dict),
+        "posterior_method": posterior.get("method") if isinstance(posterior, dict) else None,
+        "credible_interval": posterior.get("credible_interval") if isinstance(posterior, dict) else None,
         "definition": model["definition"],
         "training_source": model.get("training", {}).get("source"),
     }
@@ -210,10 +363,30 @@ def load_trained_model() -> dict[str, Any] | None:
         return None
     if not isinstance(model.get("definition"), str):
         return None
+    posterior = model.get("posterior")
+    if posterior is not None:
+        if not isinstance(posterior, dict) or not isinstance(posterior.get("method"), str):
+            return None
+        try:
+            credible_interval = float(posterior["credible_interval"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        raw_covariance = posterior.get("covariance")
+        if not 0 < credible_interval < 1 or not isinstance(raw_covariance, list) or len(raw_covariance) != len(model["weights"]):
+            return None
+        try:
+            covariance = [[float(value) for value in row] for row in raw_covariance]
+        except (TypeError, ValueError):
+            return None
+        if any(len(row) != len(model["weights"]) for row in covariance):
+            return None
+        if not all(math.isfinite(value) for row in covariance for value in row):
+            return None
+        model["posterior"] = {**posterior, "credible_interval": credible_interval, "covariance": covariance}
     return model
 
 
-def trained_model_probability(
+def trained_model_estimate(
     *,
     cloud: float,
     low_cloud: float,
@@ -222,7 +395,7 @@ def trained_model_probability(
     radiation_signal: float,
     sun_altitude: float,
     day_of_year: int | None,
-) -> float | None:
+) -> dict[str, Any] | None:
     model = load_trained_model()
     if model is None:
         return None
@@ -236,7 +409,31 @@ def trained_model_probability(
         day_of_year=day_of_year,
     )
     weights = model["weights"]
-    return sigmoid(weights[0] + sum(weight * feature for weight, feature in zip(weights[1:], features))) * 100
+    posterior = model.get("posterior")
+    if isinstance(posterior, dict):
+        try:
+            probability, lower, upper = posterior_probability_interval(
+                weights=weights,
+                covariance=posterior["covariance"],
+                features=features,
+                z_score=NORMAL_90_PERCENT_Z,
+            )
+        except (KeyError, TypeError, ValueError):
+            probability = sigmoid(weights[0] + sum(weight * feature for weight, feature in zip(weights[1:], features)))
+            lower = None
+            upper = None
+        return {
+            "probability": probability * 100,
+            "lower": None if lower is None else lower * 100,
+            "upper": None if upper is None else upper * 100,
+            "features": features,
+        }
+    return {
+        "probability": sigmoid(weights[0] + sum(weight * feature for weight, feature in zip(weights[1:], features))) * 100,
+        "lower": None,
+        "upper": None,
+        "features": None,
+    }
 
 
 def logistic_features(
@@ -289,6 +486,43 @@ def conservative_probability_cap(
     elif cloud is not None and radiation_signal is not None and cloud >= 0.65 and radiation_signal < 0.2:
         probability = min(probability, 25)
     return max(0, min(100, round(probability)))
+
+
+def conservative_estimate_cap(
+    estimate: Mapping[str, float | None],
+    weather_code: int | None,
+    *,
+    cloud: float | None = None,
+    radiation_signal: float | None = None,
+) -> dict[str, int | None]:
+    """Apply the same weather safety caps to the point estimate and range."""
+    probability = conservative_probability_cap(
+        float(estimate["probability"]),
+        weather_code,
+        cloud=cloud,
+        radiation_signal=radiation_signal,
+    )
+    lower = estimate.get("lower")
+    upper = estimate.get("upper")
+    if lower is None or upper is None:
+        return {"probability": probability, "lower": None, "upper": None}
+    lower_bound = conservative_probability_cap(
+        lower,
+        weather_code,
+        cloud=cloud,
+        radiation_signal=radiation_signal,
+    )
+    upper_bound = conservative_probability_cap(
+        upper,
+        weather_code,
+        cloud=cloud,
+        radiation_signal=radiation_signal,
+    )
+    return {
+        "probability": probability,
+        "lower": min(lower_bound, probability),
+        "upper": max(upper_bound, probability),
+    }
 
 
 def sigmoid(value: float) -> float:
