@@ -21,8 +21,8 @@ DIRECT_SUN_WINDOW_MINUTES = 60
 NOWCAST_HORIZONS_MINUTES = (0, 30, 60)
 WMO_SUNSHINE_DNI_THRESHOLD = 120
 DIRECT_SUN_NOWCAST_SCOPE = (
-    "One city-wide open-point estimate from a fixed Helsinki forecast location; "
-    "not a per-neighbourhood forecast."
+    "One city level estimate for an open point, based on a fixed Helsinki forecast location. "
+    "It is not a separate forecast for each neighbourhood."
 )
 MODEL_FEATURE_NAMES = (
     "cloud_cover",

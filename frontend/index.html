@@ -7,7 +7,7 @@
       name="description"
       content="A live sunlight and building-shadow map for Helsinki."
     />
-    <title>Sunfinder — Helsinki sunlight map</title>
+    <title>Sunfinder: Helsinki sunlight map</title>
     <link rel="preconnect" href="https://unpkg.com" />
     <link rel="preconnect" href="https://tile.openstreetmap.org" />
     <link
@@ -114,9 +114,9 @@
             <label class="toggle-label nowcast-toggle-label" for="nowcast-toggle">
               <input id="nowcast-toggle" type="checkbox" checked />
               <span class="toggle" aria-hidden="true"></span>
-              <span>Direct-sun estimate</span>
+              <span>Direct sun estimate</span>
             </label>
-            <button class="beta-badge" id="nowcast-info" type="button" aria-controls="nowcast-dialog" aria-label="About the beta direct-sun estimate">
+            <button class="beta-badge" id="nowcast-info" type="button" aria-controls="nowcast-dialog" aria-label="About the beta direct sun estimate">
               BETA <span aria-hidden="true">i</span>
             </button>
           </div>
@@ -190,16 +190,25 @@
       <p class="eyebrow">ABOUT SUNFINDER</p>
       <h2>Sunlight, block by block.</h2>
       <p>Sunfinder’s Python service calculates the sun direction for Helsinki, fetches building footprints, and projects each estimated building shadow. Your browser renders the interactive map.</p>
-      <p>In live mode, current cloud cover softens or hides the projected shadows. The optional beta direct-sun estimate is a single Helsinki-wide weather signal, while nearby buildings and trees are handled separately by the map geometry. At a selected time, shadows are clearly marked as clear-sky potential. Building footprints load from OpenStreetMap when available. Shadow shapes are an estimate, designed for finding pleasant sun rather than surveying or safety decisions.</p>
+      <p>In live mode, cloud cover softens or hides the projected shadows. The beta direct sun estimate is one city level hint. Buildings and trees are handled separately by the map. Pick another time and the map shows clear sky potential instead. Building footprints come from OpenStreetMap when available. Use this to find a nice spot in the sun, not as a survey or safety tool.</p>
     </dialog>
 
     <dialog id="nowcast-dialog" class="about-dialog nowcast-dialog">
       <button id="close-nowcast" class="dialog-close" type="button" aria-label="Close">×</button>
-      <p class="eyebrow">DIRECT-SUN ESTIMATE · BETA</p>
-      <h2>One Helsinki-wide weather signal.</h2>
-      <p>This estimates whether direct sun is likely to reach an unobstructed point in Helsinki during the next hour. It averages weather-model estimates for now, +30 minutes, and +60 minutes.</p>
-      <p>It uses one forecast point in central Helsinki, so it is <strong>not</strong> a separate forecast for every neighbourhood or a promise that the whole city is sunny. Local cloud, trees, and nearby buildings can still block the sun.</p>
-      <p>The map’s building shadows are a separate geometry calculation. This beta estimate uses forecast cloud, low cloud, precipitation, radiation, solar altitude, and time of year—not a local camera or sunshine sensor.</p>
+      <p class="eyebrow">DIRECT SUN ESTIMATE · BETA</p>
+      <h2>What this number is saying</h2>
+      <p>It is a quick guess about one thing. Can direct sun reach an open spot in Helsinki during the next hour? It looks at now, +30 minutes, and +60 minutes, then averages those three guesses.</p>
+      <p>The weather comes from one forecast point in central Helsinki. It cannot tell you that every neighbourhood is sunny. It also cannot see a tree, a nearby building, or a small local cloud over your street.</p>
+      <details class="nowcast-math">
+        <summary>See a small worked example</summary>
+        <p>Imagine 60% total cloud, 40% low cloud, a 35° high sun, and a weak direct radiation signal of 0.25. The model adds those weighted clues into a score of 1.38.</p>
+        <code>chance = 1 / (1 + exp(-1.38)) = 0.80</code>
+        <p>So it would show about an 80% chance before the extra fog, rain, and heavy cloud checks.</p>
+        <h3>What about Bayesian modelling?</h3>
+        <p>This version is not Bayesian yet. It keeps one fixed weight for each clue. Its small L2 penalty is similar to starting with a gentle belief that very large weights are unlikely.</p>
+        <p>A Bayesian version would keep a range of possible weights instead. That would let the app say when it is unsure, not only give one percentage.</p>
+      </details>
+      <p>The building shadows on the map are worked out separately from the sun angle and building shape. This estimate uses cloud, rain chance, radiation, sun height, and the time of year. It does not use a camera or a sunshine sensor.</p>
     </dialog>
   </body>
 </html>
