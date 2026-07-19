@@ -56,7 +56,7 @@ function initialise() {
     'nowcast-control', 'nowcast-toggle', 'nowcast-info', 'nowcast-dialog', 'nowcast-range', 'close-nowcast', 'legend-shadow-label',
     'header-status', 'place-select', 'load-buildings', 'building-status', 'data-note',
     'map-loading', 'map-loading-title', 'map-loading-detail', 'inspector', 'inspector-title',
-    'inspector-detail', 'close-inspector', 'tilt-button', 'locate-button', 'about-button', 'about-dialog',
+    'inspector-detail', 'close-inspector', 'locate-button', 'about-button', 'about-dialog',
     'close-about', 'toast'
   ].forEach((id) => { elements[id] = document.getElementById(id); });
 
@@ -194,6 +194,9 @@ function wireControls() {
       updateWeatherPanel();
     });
   });
+  document.querySelectorAll('.dimension-option').forEach((button) => {
+    button.addEventListener('click', () => setMapDimension(button.dataset.dimension === '3d'));
+  });
 
   elements['clear-sky-toggle'].addEventListener('click', () => {
     state.showClearSkyPotential = !state.showClearSkyPotential;
@@ -213,7 +216,6 @@ function wireControls() {
   });
   elements['load-buildings'].addEventListener('click', () => refreshScene({ retryBuildings: true }));
   elements['close-inspector'].addEventListener('click', () => { elements['inspector'].hidden = true; });
-  elements['tilt-button'].addEventListener('click', toggle3d);
   elements['locate-button'].addEventListener('click', locateUser);
   elements['about-button'].addEventListener('click', () => elements['about-dialog'].showModal());
   elements['close-about'].addEventListener('click', () => elements['about-dialog'].close());
@@ -488,9 +490,7 @@ function buildingSunColor() {
     ? '#2b3b4a'
     : !sunIsUp
       ? '#536474'
-      : state.view === 'sunlight'
-        ? '#e9b157'
-        : '#c9934d';
+      : '#c9934d';
 }
 
 function updateSunPanel() {
@@ -736,7 +736,7 @@ function setBuildingButtonLoading(isLoading) {
   button.disabled = isLoading;
   button.innerHTML = isLoading
     ? '<span class="loader"></span> Loading this map area…'
-    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg> Refresh visible map';
+    : 'Load buildings here';
 }
 
 function inspectBuilding(event) {
@@ -761,12 +761,15 @@ function inspectBuilding(event) {
   elements['inspector-detail'].textContent = `${Math.round(height)} m high · clear-sky length ${Math.round(length)} m toward ${bearingToCompass((state.solar.azimuth + 180) % 360)}. ${realWorldNote}`;
 }
 
-function toggle3d() {
+function setMapDimension(is3d) {
+  state.is3d = is3d;
+  document.querySelectorAll('.dimension-option').forEach((button) => {
+    const isActive = (button.dataset.dimension === '3d') === is3d;
+    button.classList.toggle('active', isActive);
+    button.setAttribute('aria-pressed', String(isActive));
+  });
   if (!state.map) return;
-  state.is3d = !state.is3d;
-  state.map.easeTo({ pitch: state.is3d ? 54 : 0, bearing: state.is3d ? -18 : 0, duration: 700, essential: true });
-  elements['tilt-button'].setAttribute('aria-pressed', String(state.is3d));
-  elements['tilt-button'].querySelector('span').textContent = state.is3d ? '3D view' : '2D view';
+  state.map.easeTo({ pitch: is3d ? 54 : 0, bearing: is3d ? -18 : 0, duration: 700, essential: true });
 }
 
 function locateUser() {

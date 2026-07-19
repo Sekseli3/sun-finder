@@ -75,10 +75,10 @@
             <label class="toggle-label" for="live-toggle">
               <input id="live-toggle" type="checkbox" checked />
               <span class="toggle" aria-hidden="true"></span>
-              <span>Keep live</span>
+              <span>Live time</span>
             </label>
             <label class="refresh-select" for="refresh-rate">
-              <span>Update</span>
+              <span>Refresh</span>
               <select id="refresh-rate" aria-label="Live update frequency">
                 <option value="1" selected>every min</option>
                 <option value="5">every 5 min</option>
@@ -98,10 +98,15 @@
             </div>
           </div>
 
-          <div class="view-switch" role="group" aria-label="Map view">
-            <button class="view-option active" data-view="shadows" type="button">Shadows</button>
-            <button class="view-option" data-view="sunlight" type="button">Sun potential</button>
-            <button class="view-option" data-view="night" type="button">Night</button>
+          <div class="map-mode-row">
+            <div class="view-switch" role="group" aria-label="Map layer">
+              <button class="view-option active" data-view="shadows" type="button">Shadows</button>
+              <button class="view-option" data-view="night" type="button">Night map</button>
+            </div>
+            <div class="dimension-switch" role="group" aria-label="Map angle">
+              <button class="dimension-option" data-dimension="2d" type="button" aria-pressed="false">2D</button>
+              <button class="dimension-option active" data-dimension="3d" type="button" aria-pressed="true">3D</button>
+            </div>
           </div>
 
           <section class="weather-callout" id="weather-callout" data-state="loading" aria-live="polite">
@@ -142,7 +147,7 @@
         </section>
 
         <section class="place-panel panel" aria-label="Map location and building data">
-          <p class="eyebrow">MAP DATA</p>
+          <p class="eyebrow">BUILDINGS</p>
           <label class="sr-only" for="place-select">Jump to a Helsinki place</label>
           <select id="place-select">
             <option value="60.1697,24.9525,15.8,58">Senate Square</option>
@@ -152,10 +157,7 @@
             <option value="60.1609,24.9419,16.1,57">Kaivopuisto</option>
           </select>
           <p class="building-status" id="building-status">Loading visible map…</p>
-          <button id="load-buildings" class="load-button" type="button" title="Refresh buildings in this visible map area" aria-label="Refresh buildings in this visible map area">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>
-            Refresh visible map
-          </button>
+          <button id="load-buildings" class="load-button" type="button" title="Load buildings for the part of the map you can see" aria-label="Load buildings for the part of the map you can see">Load buildings here</button>
           <p class="data-note" id="data-note">OpenStreetMap data for the visible area.</p>
         </section>
 
@@ -167,14 +169,8 @@
         </section>
 
         <div class="legend panel" aria-label="Map legend">
-          <span><i class="legend-swatch sunlight"></i>potentially sunlit face</span>
           <span><i class="legend-swatch shadow"></i><span id="legend-shadow-label">projected shadow</span></span>
         </div>
-
-        <button class="layers-button panel" id="tilt-button" type="button" aria-pressed="true">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Zm-8 9 8 4.5 8-4.5M4 15l8 4.5 8-4.5"/></svg>
-          <span>3D view</span>
-        </button>
 
         <div class="map-loading panel" id="map-loading" role="status" aria-live="polite" hidden>
           <span class="map-loading-spinner" aria-hidden="true"></span>
