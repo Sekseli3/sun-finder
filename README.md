@@ -1,5 +1,10 @@
 # Sunfinder Helsinki
 
+[**Hosted version here → sunfinder-helsinki.onrender.com**](https://sunfinder-helsinki.onrender.com/)
+
+Hosted on Render's free tier. It may take about a minute to wake up after 15
+minutes without visitors.
+
 An interactive 2D / 3D map for finding sunlight in Helsinki.
 
 The frontend is a small MapLibre browser app. The Python/FastAPI backend owns
@@ -22,7 +27,6 @@ Open [http://localhost:4173](http://localhost:4173).
 `make install`, `make run`, and `make check` provide the same common actions.
 
 ## How it works
-
 - The time control uses the `Europe/Helsinki` time zone, including daylight
   saving transitions.
 - `GET /api/scene` accepts a Helsinki map bounding box and time. It returns the
@@ -40,9 +44,18 @@ Open [http://localhost:4173](http://localhost:4173).
 - Shadows are projected from building height and sun altitude. They are useful
   planning visualisations, not survey-grade measurements.
 
-## Notes for production
+## How a shadow is calculated
 
-For a city-wide production service, replace public Overpass queries with an OSM
-extract in PostGIS, store verified building heights, and generate shadow geometry
-in background jobs or vector tiles. The current in-memory cache is deliberately
-simple for a local prototype.
+For a building of height `H` and a sun altitude of `α`, the projected shadow
+length is `H / tan(α)`. The app caps that length at 560 metres so very low sun
+does not create enormous map geometry.
+
+```python
+shadow_length_m = min(560, building_height_m / tan(radians(sun_altitude_deg)))
+shadow_bearing_deg = (sun_azimuth_deg + 180) % 360  # opposite the sun
+```
+
+Each point in the building footprint is shifted by that distance and bearing.
+The original and shifted footprints are then combined into one convex-hull
+polygon. For example, a 20 m building with a 30°-high sun casts a roughly
+34.6 m shadow; if the sun is at 135°, the shadow points towards 315°.
