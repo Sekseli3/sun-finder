@@ -45,13 +45,13 @@ window.addEventListener('DOMContentLoaded', initialise);
 function initialise() {
   [
     'date-time', 'time-slider', 'timeline-date', 'timeline-time', 'live-toggle',
-    'refresh-rate', 'now-button', 'calendar-reset', 'sun-orb', 'sun-orbit', 'sun-pointer',
+    'refresh-rate', 'now-button', 'mobile-controls-toggle', 'control-panel', 'calendar-reset', 'sun-orb', 'sun-orbit', 'sun-pointer',
     'solar-state', 'solar-altitude', 'solar-detail', 'sunrise', 'sunset',
     'weather-callout', 'weather-glyph', 'weather-title', 'weather-detail', 'clear-sky-toggle',
     'nowcast-control', 'nowcast-toggle', 'nowcast-info', 'nowcast-dialog', 'nowcast-range', 'close-nowcast', 'legend-shadow-label',
     'header-status', 'place-select', 'load-buildings', 'building-status', 'data-note',
-    'map-loading', 'map-loading-title', 'map-loading-detail', 'inspector-title',
-    'inspector-detail', 'tilt-button', 'locate-button', 'about-button', 'about-dialog',
+    'map-loading', 'map-loading-title', 'map-loading-detail', 'inspector', 'inspector-title',
+    'inspector-detail', 'close-inspector', 'tilt-button', 'locate-button', 'about-button', 'about-dialog',
     'close-about', 'toast'
   ].forEach((id) => { elements[id] = document.getElementById(id); });
 
@@ -176,6 +176,9 @@ function wireControls() {
     scheduleLiveRefresh();
   });
   elements['now-button'].addEventListener('click', setDateToNow);
+  elements['mobile-controls-toggle'].addEventListener('click', () => {
+    setMobileControlsOpen(!elements['control-panel'].classList.contains('mobile-expanded'));
+  });
   elements['calendar-reset'].addEventListener('click', setDateToNow);
 
   document.querySelectorAll('.view-option').forEach((button) => {
@@ -204,6 +207,7 @@ function wireControls() {
     flyToAndLoad({ center: [lng, lat], zoom, pitch: state.is3d ? pitch : 0, bearing: -18, duration: 1150, essential: true });
   });
   elements['load-buildings'].addEventListener('click', () => refreshScene({ retryBuildings: true }));
+  elements['close-inspector'].addEventListener('click', () => { elements['inspector'].hidden = true; });
   elements['tilt-button'].addEventListener('click', toggle3d);
   elements['locate-button'].addEventListener('click', locateUser);
   elements['about-button'].addEventListener('click', () => elements['about-dialog'].showModal());
@@ -250,6 +254,15 @@ function setDateToNow() {
   setLive(true);
   syncInputsFromDate();
   refreshScene();
+}
+
+function setMobileControlsOpen(isOpen) {
+  const panel = elements['control-panel'];
+  const button = elements['mobile-controls-toggle'];
+  panel.classList.toggle('mobile-expanded', isOpen);
+  button.setAttribute('aria-expanded', String(isOpen));
+  button.textContent = isOpen ? 'Done' : 'Controls';
+  if (state.map) window.setTimeout(() => state.map.resize(), 260);
 }
 
 function setLive(value) {
@@ -713,6 +726,7 @@ function inspectBuilding(event) {
   const features = state.map.queryRenderedFeatures(event.point, { layers: ['building-extrusions'] });
   if (!features.length) return;
   const selected = features[0];
+  elements['inspector'].hidden = false;
   const height = normaliseHeight(selected.properties.height);
   elements['inspector-title'].textContent = selected.properties.name || 'Selected building';
   if (state.solar.altitude <= 0) {

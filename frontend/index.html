@@ -51,13 +51,16 @@
         <div id="map" aria-label="Interactive map of Helsinki showing sun and building shadows"></div>
         <div class="map-vignette" aria-hidden="true"></div>
 
-        <section class="control-panel panel" aria-label="Sun controls">
+        <section class="control-panel panel" id="control-panel" aria-label="Sun controls">
           <div class="panel-heading">
             <div>
               <p class="eyebrow">SUN CONDITIONS</p>
               <h1>Find the light</h1>
             </div>
-            <button class="now-button" id="now-button" type="button">Now</button>
+            <div class="panel-heading-actions">
+              <button class="now-button" id="now-button" type="button">Now</button>
+              <button class="mobile-controls-toggle" id="mobile-controls-toggle" type="button" aria-controls="control-panel" aria-expanded="false">Controls</button>
+            </div>
           </div>
 
           <label class="field-label" for="date-time">Helsinki time</label>
@@ -149,14 +152,15 @@
             <option value="60.1609,24.9419,16.1,57">Kaivopuisto</option>
           </select>
           <p class="building-status" id="building-status">Loading visible map…</p>
-          <button id="load-buildings" class="load-button" type="button">
+          <button id="load-buildings" class="load-button" type="button" title="Refresh buildings in this visible map area" aria-label="Refresh buildings in this visible map area">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>
             Refresh visible map
           </button>
           <p class="data-note" id="data-note">OpenStreetMap data for the visible area.</p>
         </section>
 
-        <section class="inspector panel" id="inspector" aria-live="polite">
+        <section class="inspector panel" id="inspector" aria-live="polite" hidden>
+          <button class="inspector-close" id="close-inspector" type="button" aria-label="Close building details">×</button>
           <p class="eyebrow">AT THIS BLOCK</p>
           <p id="inspector-title">Tap a building</p>
           <p class="inspector-detail" id="inspector-detail">See its estimated shadow length and current sun exposure.</p>
