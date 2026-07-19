@@ -24,6 +24,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.nowcast import direct_sun_nowcast, unavailable_direct_sun_nowcast
@@ -109,36 +110,53 @@ class BuildingStore:
 
     def __init__(self) -> None:
         self._cache: dict[str, BuildingCacheEntry] = {}
+        self._inflight: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     def get(self, bounds: Bounds, *, retry_failed: bool = False) -> tuple[list[dict[str, Any]], str, bool]:
-        now = time.monotonic()
-        with self._lock:
-            cached = self._cache.get(bounds.cache_key)
-            should_retry_fallback = bool(retry_failed and cached and cached.source == "fallback")
-            if cached and cached.expires_at > now and not should_retry_fallback:
-                return cached.features, cached.source, True
+        cache_key = bounds.cache_key
+        while True:
+            now = time.monotonic()
+            with self._lock:
+                cached = self._cache.get(cache_key)
+                should_retry_fallback = bool(retry_failed and cached and cached.source == "fallback")
+                if cached and cached.expires_at > now and not should_retry_fallback:
+                    return cached.features, cached.source, True
+                in_flight = self._inflight.get(cache_key)
+                if in_flight is None:
+                    in_flight = threading.Event()
+                    self._inflight[cache_key] = in_flight
+                    break
+            # A time scrub can make several identical requests before Overpass
+            # responds. Let them share the same fetch instead of piling up.
+            in_flight.wait()
 
         try:
-            features = fetch_openstreetmap_buildings(bounds)
-            if len(features) < 4:
-                raise ValueError("OpenStreetMap returned too few building footprints")
-            source = "openstreetmap"
-            ttl_seconds = 12 * 60 * 60
-        except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
-            # The map remains useful when a public API is rate-limited or offline.
-            print(f"OpenStreetMap building fetch failed: {error}")
-            features = fallback_features_in(bounds)
-            source = "fallback"
-            ttl_seconds = FAILED_BUILDING_CACHE_SECONDS
+            try:
+                features = fetch_openstreetmap_buildings(bounds)
+                if len(features) < 4:
+                    raise ValueError("OpenStreetMap returned too few building footprints")
+                source = "openstreetmap"
+                ttl_seconds = 12 * 60 * 60
+            except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
+                # The map remains useful when a public API is rate-limited or offline.
+                print(f"OpenStreetMap building fetch failed: {error}")
+                features = fallback_features_in(bounds)
+                source = "fallback"
+                ttl_seconds = FAILED_BUILDING_CACHE_SECONDS
 
-        with self._lock:
-            self._cache[bounds.cache_key] = BuildingCacheEntry(
-                expires_at=now + ttl_seconds,
-                features=features,
-                source=source,
-            )
-        return features, source, False
+            with self._lock:
+                self._cache[cache_key] = BuildingCacheEntry(
+                    expires_at=now + ttl_seconds,
+                    features=features,
+                    source=source,
+                )
+            return features, source, False
+        finally:
+            with self._lock:
+                completed = self._inflight.pop(cache_key, None)
+            if completed:
+                completed.set()
 
 
 building_store = BuildingStore()
@@ -633,6 +651,7 @@ app = FastAPI(
     version="1.0.0",
     description="Server-side solar and building-shadow calculations for Helsinki.",
 )
+app.add_middleware(GZipMiddleware, minimum_size=1_000)
 
 
 @app.get("/api/health")
@@ -685,6 +704,7 @@ async def scene(
     at: str | None = Query(default=None, description="ISO-8601 timestamp"),
     live: bool = Query(default=True, description="Whether current weather should be applied"),
     retry_buildings: bool = Query(default=False, description="Retry a failed building-data lookup"),
+    include_buildings: bool = Query(default=True, description="Whether to include unchanged building geometry"),
 ) -> dict[str, Any]:
     """Return data for one map viewport at one point in Helsinki time."""
     bounds = parse_bounds(bbox)
@@ -695,17 +715,20 @@ async def scene(
     )
     features, source, from_cache = building_result
     shadows = create_shadows(features, condition_data["solar"])
-    return {
+    payload = {
         **condition_data,
-        "buildings": feature_collection(features),
         "shadows": feature_collection(shadows),
         "meta": {
             "building_count": len(features),
             "shadow_count": len(shadows),
             "source": source,
             "cached": from_cache,
+            "buildings_included": include_buildings,
         },
     }
+    if include_buildings:
+        payload["buildings"] = feature_collection(features)
+    return payload
 
 
 # Mounting static files last means /api routes always take precedence.

@@ -25,6 +25,11 @@ const state = {
   showDirectSunNowcast: true,
   buildings: emptyFeatureCollection(),
   shadows: emptyFeatureCollection(),
+  buildingsBoundsKey: null,
+  hasLiveBuildingData: false,
+  buildingsDirty: true,
+  shadowsDirty: true,
+  renderedShadowsVisible: false,
   liveTimer: null,
   refreshDebounce: null,
   abortController: null,
@@ -137,7 +142,7 @@ function installMapLayers() {
     source: 'building-footprints',
     minzoom: 12,
     paint: {
-      'fill-extrusion-color': ['get', 'sunColor'],
+      'fill-extrusion-color': '#c9934d',
       'fill-extrusion-height': ['get', 'height'],
       'fill-extrusion-base': 0,
       'fill-extrusion-opacity': 0.9,
@@ -292,7 +297,7 @@ function scheduleLiveRefresh() {
 
 function scheduleSceneRefresh() {
   window.clearTimeout(state.refreshDebounce);
-  state.refreshDebounce = window.setTimeout(() => refreshScene({ quiet: true }), 160);
+  state.refreshDebounce = window.setTimeout(() => refreshScene({ quiet: true }), 120);
 }
 
 function visibleBoundsKey() {
@@ -347,6 +352,9 @@ async function refreshScene({
   state.abortController = new AbortController();
   const boundsKey = visibleBoundsKey();
   if (!boundsKey) return;
+  const includeBuildings = retryBuildings
+    || state.buildingsBoundsKey !== boundsKey
+    || !state.hasLiveBuildingData;
   if (showProgress) {
     setBuildingButtonLoading(true);
     setBuildingLoadStatus(
@@ -359,7 +367,8 @@ async function refreshScene({
     bbox: boundsKey,
     at: state.date.toISOString(),
     live: String(state.live),
-    retry_buildings: String(retryBuildings)
+    retry_buildings: String(retryBuildings),
+    include_buildings: String(includeBuildings)
   });
 
   try {
@@ -367,7 +376,7 @@ async function refreshScene({
     const scene = await response.json();
     if (!response.ok) throw new Error(scene.detail || `The API returned ${response.status}`);
     if (requestId !== state.sceneRequestId) return;
-    applyScene(scene);
+    applyScene(scene, { boundsKey, includeBuildings });
     if (scene.meta.source === 'fallback') {
       const retryScheduled = scheduleBuildingRetry(boundsKey);
       if (!quiet) {
@@ -393,18 +402,27 @@ async function refreshScene({
   }
 }
 
-function applyScene(scene) {
+function applyScene(scene, { boundsKey, includeBuildings }) {
   applyConditions(scene, { render: false });
   const hasLiveBuildingData = scene.meta.source === 'openstreetmap';
-  state.buildings = hasLiveBuildingData ? scene.buildings || emptyFeatureCollection() : emptyFeatureCollection();
+  const buildingsIncluded = scene.meta.buildings_included ?? includeBuildings;
+  if (buildingsIncluded || !hasLiveBuildingData) {
+    state.buildings = hasLiveBuildingData ? scene.buildings || emptyFeatureCollection() : emptyFeatureCollection();
+    state.buildingsBoundsKey = hasLiveBuildingData ? boundsKey : null;
+    state.hasLiveBuildingData = hasLiveBuildingData;
+    state.buildingsDirty = true;
+  }
   state.shadows = hasLiveBuildingData ? scene.shadows || emptyFeatureCollection() : emptyFeatureCollection();
+  state.shadowsDirty = true;
   applyMapData();
 
   const count = scene.meta.building_count;
   if (hasLiveBuildingData) {
     setBuildingLoadStatus(
       count ? `${count.toLocaleString()} buildings ready` : 'No buildings in this view',
-      scene.meta.cached ? 'OpenStreetMap cache · visible area' : 'OpenStreetMap · visible area'
+      buildingsIncluded
+        ? scene.meta.cached ? 'OpenStreetMap cache · visible area' : 'OpenStreetMap · visible area'
+        : 'Cached building geometry · shadows updated'
     );
   } else {
     setBuildingLoadStatus(
@@ -447,32 +465,32 @@ function applyConditions(conditions, { render = true } = {}) {
 
 function applyMapData() {
   if (!state.map?.isStyleLoaded() || !state.map.getSource('building-footprints')) return;
-  const buildings = decorateBuildings(state.buildings);
-  const shadows = state.view === 'shadows' ? state.shadows : emptyFeatureCollection();
-  state.map.getSource('building-footprints').setData(buildings);
-  state.map.getSource('building-shadows').setData(shadows);
+  if (state.buildingsDirty) {
+    state.map.getSource('building-footprints').setData(state.buildings);
+    state.buildingsDirty = false;
+  }
+  const showShadows = state.view === 'shadows';
+  if (state.shadowsDirty || state.renderedShadowsVisible !== showShadows) {
+    state.map.getSource('building-shadows').setData(showShadows ? state.shadows : emptyFeatureCollection());
+    state.shadowsDirty = false;
+    state.renderedShadowsVisible = showShadows;
+  }
   state.map.setPaintProperty('building-shadows', 'fill-opacity', weatherAdjustedShadowOpacity());
   state.map.setPaintProperty('building-extrusions', 'fill-extrusion-opacity', state.view === 'night' ? 0.82 : 0.9);
+  state.map.setPaintProperty('building-extrusions', 'fill-extrusion-color', buildingSunColor());
   state.map.setPaintProperty('osm', 'raster-saturation', state.view === 'night' ? -0.78 : -0.58);
   state.map.setPaintProperty('osm', 'raster-brightness-max', state.view === 'night' ? 0.57 : 0.92);
 }
 
-function decorateBuildings(featureCollection) {
+function buildingSunColor() {
   const sunIsUp = state.solar?.altitude > 0;
-  const sunColor = state.view === 'night'
+  return state.view === 'night'
     ? '#2b3b4a'
     : !sunIsUp
       ? '#536474'
       : state.view === 'sunlight'
         ? '#e9b157'
         : '#c9934d';
-  return {
-    type: 'FeatureCollection',
-    features: (featureCollection.features || []).map((feature) => ({
-      ...feature,
-      properties: { ...feature.properties, sunColor }
-    }))
-  };
 }
 
 function updateSunPanel() {
