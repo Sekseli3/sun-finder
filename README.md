@@ -1,5 +1,5 @@
 # Sunfinder Helsinki
-
+Have you ever had the problem where you want to catch some sweet sweet sunrays on a terrace or in a park, but builings seem to block everything? Don't worry I have the solution for you: Sunfinder! It shows where to catch those precious rays from an interactive map. Find it in the link below!
 [**Hosted version here → sunfinder-helsinki.onrender.com**](https://sunfinder-helsinki.onrender.com/)
 
 Hosted on Render's free tier. It may take about a minute to wake up after 15
