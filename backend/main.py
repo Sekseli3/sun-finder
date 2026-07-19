@@ -45,6 +45,7 @@ OVERPASS_ENDPOINTS = (
 OPEN_METEO_ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 WEATHER_CACHE_SECONDS = 5 * 60
 OVERPASS_HTTP_TIMEOUT_SECONDS = 10
+FAILED_BUILDING_CACHE_SECONDS = 15
 
 # This bounds check keeps the public Overpass request firmly scoped to the
 # product's Helsinki use case. It is intentionally broader than city centre.
@@ -110,11 +111,12 @@ class BuildingStore:
         self._cache: dict[str, BuildingCacheEntry] = {}
         self._lock = threading.Lock()
 
-    def get(self, bounds: Bounds) -> tuple[list[dict[str, Any]], str, bool]:
+    def get(self, bounds: Bounds, *, retry_failed: bool = False) -> tuple[list[dict[str, Any]], str, bool]:
         now = time.monotonic()
         with self._lock:
             cached = self._cache.get(bounds.cache_key)
-            if cached and cached.expires_at > now:
+            should_retry_fallback = bool(retry_failed and cached and cached.source == "fallback")
+            if cached and cached.expires_at > now and not should_retry_fallback:
                 return cached.features, cached.source, True
 
         try:
@@ -128,7 +130,7 @@ class BuildingStore:
             print(f"OpenStreetMap building fetch failed: {error}")
             features = fallback_features_in(bounds)
             source = "fallback"
-            ttl_seconds = 10 * 60
+            ttl_seconds = FAILED_BUILDING_CACHE_SECONDS
 
         with self._lock:
             self._cache[bounds.cache_key] = BuildingCacheEntry(
@@ -682,12 +684,13 @@ async def scene(
     bbox: str = Query(description="south,west,north,east"),
     at: str | None = Query(default=None, description="ISO-8601 timestamp"),
     live: bool = Query(default=True, description="Whether current weather should be applied"),
+    retry_buildings: bool = Query(default=False, description="Retry a failed building-data lookup"),
 ) -> dict[str, Any]:
     """Return data for one map viewport at one point in Helsinki time."""
     bounds = parse_bounds(bbox)
     timestamp = parse_timestamp(at)
     building_result, condition_data = await asyncio.gather(
-        asyncio.to_thread(building_store.get, bounds),
+        asyncio.to_thread(building_store.get, bounds, retry_failed=retry_buildings),
         current_conditions(timestamp, live),
     )
     features, source, from_cache = building_result

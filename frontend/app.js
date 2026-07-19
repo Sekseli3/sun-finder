@@ -8,6 +8,8 @@
 
 const HELSINKI = { lat: 60.1699, lng: 24.9384, timeZone: 'Europe/Helsinki' };
 const DEFAULT_BUILDING_HEIGHT = 15;
+const BUILDING_RETRY_DELAY_MS = 1_800;
+const MAX_BUILDING_RETRIES = 2;
 
 const state = {
   date: new Date(),
@@ -29,7 +31,10 @@ const state = {
   sceneRequestId: 0,
   conditionsAbortController: null,
   conditionsRequestId: 0,
-  mapMoveRequestId: 0
+  mapMoveRequestId: 0,
+  buildingRetryTimer: null,
+  buildingRetryBounds: null,
+  buildingRetryCount: 0
 };
 
 const elements = {};
@@ -198,7 +203,7 @@ function wireControls() {
     if (!state.map) return;
     flyToAndLoad({ center: [lng, lat], zoom, pitch: state.is3d ? pitch : 0, bearing: -18, duration: 1150, essential: true });
   });
-  elements['load-buildings'].addEventListener('click', () => refreshScene());
+  elements['load-buildings'].addEventListener('click', () => refreshScene({ retryBuildings: true }));
   elements['tilt-button'].addEventListener('click', toggle3d);
   elements['locate-button'].addEventListener('click', locateUser);
   elements['about-button'].addEventListener('click', () => elements['about-dialog'].showModal());
@@ -277,15 +282,58 @@ function scheduleSceneRefresh() {
   state.refreshDebounce = window.setTimeout(() => refreshScene({ quiet: true }), 160);
 }
 
-async function refreshScene({ quiet = false, syncDateInput = false, showProgress = !quiet } = {}) {
+function visibleBoundsKey() {
+  const bounds = state.map?.getBounds();
+  if (!bounds) return null;
+  return [bounds.getSouth(), bounds.getWest(), bounds.getNorth(), bounds.getEast()]
+    .map((value) => value.toFixed(5))
+    .join(',');
+}
+
+function clearBuildingRetry() {
+  window.clearTimeout(state.buildingRetryTimer);
+  state.buildingRetryTimer = null;
+  state.buildingRetryBounds = null;
+  state.buildingRetryCount = 0;
+}
+
+function scheduleBuildingRetry(boundsKey) {
+  if (state.buildingRetryBounds !== boundsKey) {
+    clearBuildingRetry();
+    state.buildingRetryBounds = boundsKey;
+  }
+  if (state.buildingRetryCount >= MAX_BUILDING_RETRIES) return false;
+
+  state.buildingRetryCount += 1;
+  window.clearTimeout(state.buildingRetryTimer);
+  state.buildingRetryTimer = window.setTimeout(() => {
+    state.buildingRetryTimer = null;
+    if (visibleBoundsKey() !== boundsKey) {
+      clearBuildingRetry();
+      return;
+    }
+    refreshScene({ quiet: true, showProgress: true, retryBuildings: true, fromAutoRetry: true });
+  }, BUILDING_RETRY_DELAY_MS);
+  return true;
+}
+
+async function refreshScene({
+  quiet = false,
+  syncDateInput = false,
+  showProgress = !quiet,
+  retryBuildings = false,
+  fromAutoRetry = false
+} = {}) {
   if (syncDateInput) syncInputsFromDate();
+  if (!fromAutoRetry) clearBuildingRetry();
   refreshConditions();
   if (!state.map?.isStyleLoaded() || !state.map.getSource('building-footprints')) return;
 
   const requestId = ++state.sceneRequestId;
   state.abortController?.abort();
   state.abortController = new AbortController();
-  const bounds = state.map.getBounds();
+  const boundsKey = visibleBoundsKey();
+  if (!boundsKey) return;
   if (showProgress) {
     setBuildingButtonLoading(true);
     setBuildingLoadStatus(
@@ -295,9 +343,10 @@ async function refreshScene({ quiet = false, syncDateInput = false, showProgress
     setMapLoading(true, 'Loading visible area…', 'Fetching building data…');
   }
   const parameters = new URLSearchParams({
-    bbox: [bounds.getSouth(), bounds.getWest(), bounds.getNorth(), bounds.getEast()].map((value) => value.toFixed(5)).join(','),
+    bbox: boundsKey,
     at: state.date.toISOString(),
-    live: String(state.live)
+    live: String(state.live),
+    retry_buildings: String(retryBuildings)
   });
 
   try {
@@ -306,7 +355,17 @@ async function refreshScene({ quiet = false, syncDateInput = false, showProgress
     if (!response.ok) throw new Error(scene.detail || `The API returned ${response.status}`);
     if (requestId !== state.sceneRequestId) return;
     applyScene(scene);
-    if (!quiet) showToast(`Loaded ${scene.meta.building_count.toLocaleString()} buildings for the visible map. Shadows updated.`);
+    if (scene.meta.source === 'fallback') {
+      const retryScheduled = scheduleBuildingRetry(boundsKey);
+      if (!quiet) {
+        showToast(retryScheduled
+          ? 'Building data is taking a moment. Trying again…'
+          : 'Building data is unavailable right now. Try refresh again shortly.');
+      }
+    } else {
+      clearBuildingRetry();
+      if (!quiet) showToast(`Loaded ${scene.meta.building_count.toLocaleString()} buildings for the visible map. Shadows updated.`);
+    }
   } catch (error) {
     if (error.name === 'AbortError') return;
     if (requestId !== state.sceneRequestId) return;
@@ -323,20 +382,21 @@ async function refreshScene({ quiet = false, syncDateInput = false, showProgress
 
 function applyScene(scene) {
   applyConditions(scene, { render: false });
-  state.buildings = scene.buildings || emptyFeatureCollection();
-  state.shadows = scene.shadows || emptyFeatureCollection();
+  const hasLiveBuildingData = scene.meta.source === 'openstreetmap';
+  state.buildings = hasLiveBuildingData ? scene.buildings || emptyFeatureCollection() : emptyFeatureCollection();
+  state.shadows = hasLiveBuildingData ? scene.shadows || emptyFeatureCollection() : emptyFeatureCollection();
   applyMapData();
 
   const count = scene.meta.building_count;
-  if (scene.meta.source === 'openstreetmap') {
+  if (hasLiveBuildingData) {
     setBuildingLoadStatus(
       count ? `${count.toLocaleString()} buildings ready` : 'No buildings in this view',
       scene.meta.cached ? 'OpenStreetMap cache · visible area' : 'OpenStreetMap · visible area'
     );
   } else {
     setBuildingLoadStatus(
-      count ? `${count.toLocaleString()} sample buildings` : 'No building data in this view',
-      'Live data unavailable'
+      'Building data is taking a moment…',
+      'Trying OpenStreetMap again…'
     );
   }
 }
