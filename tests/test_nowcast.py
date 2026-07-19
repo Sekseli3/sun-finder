@@ -71,6 +71,7 @@ class DirectSunNowcastTests(unittest.TestCase):
 
         self.assertTrue(nowcast["available"])
         self.assertEqual(nowcast["window_minutes"], 60)
+        self.assertIn("not a per-neighbourhood forecast", nowcast["scope"])
         self.assertEqual([sample["minutes_ahead"] for sample in nowcast["samples"]], [0, 30, 60])
         self.assertGreater(nowcast["samples"][0]["probability"], nowcast["samples"][-1]["probability"])
 

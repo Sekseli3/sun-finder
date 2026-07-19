@@ -48,36 +48,87 @@ Open [http://localhost:4173](http://localhost:4173).
 - Shadows are projected from building height and sun altitude. They are useful
   planning visualisations, not survey-grade measurements.
 
-## Direct-sun nowcast
+## Direct-sun estimate (beta)
 
-The live map shows the average probability from now, +30 minutes, and +60
-minutes. It means direct sun at an **open point** in Helsinki; the building
-geometry separately decides whether a specific map location is blocked.
+The optional live-map estimate is the average probability for now, +30 minutes,
+and +60 minutes. It predicts whether direct sunlight is likely to reach an
+**unobstructed point** during the next hour.
+
+### Scope
+
+This is one Helsinki-wide weather signal, calculated from the fixed forecast
+location `60.1699, 24.9384` in central Helsinki. It is **not** a separate
+forecast for each street or neighbourhood, and it does not mean every part of
+Helsinki will see sun at once. The map separately uses building geometry to
+show whether a given location is blocked; trees and locally changing cloud are
+not modelled. The UI labels this feature **BETA** for that reason.
+
+### Live update path
+
+In live mode, the browser asks `/api/conditions` when the map refreshes. The
+selected cadence is one, five, or ten minutes (one minute by default). The
+Python service caches the upstream weather response for five minutes, so it
+does not call Open-Meteo more often than that.
+
+Each upstream request asks Open-Meteo for the current Helsinki cloud condition
+and three hours of hourly forecast fields: total and low cloud, weather code,
+precipitation probability, direct radiation, and direct normal irradiance. At
+the zero-minute sample the newest current cloud/weather-code values take
+precedence; the +30 and +60 minute samples use the closest hourly forecast.
+The three direct-sun probabilities are averaged and rounded into the number in
+the UI. It is weather-model data, not a camera or local sunshine sensor.
+
+### Training data and target
 
 The checked-in model is a small logistic regression trained on three years of
-[Helsinki weather reanalysis](https://open-meteo.com/en/docs/historical-weather-api).
-Its target is the WMO-style sunshine threshold: direct normal irradiance above
-120 W/m². It uses total/low cloud cover,
-precipitation signals, direct radiation, sun altitude, and cyclic day-of-year
-features. Overcast, fog, and precipitation are capped conservatively so the
-interface does not imply sharp shadows under a uniformly grey sky.
+[Helsinki weather reanalysis](https://open-meteo.com/en/docs/historical-weather-api),
+from 2023-07-15 through 2026-07-13. A daylight row is positive when its direct
+normal irradiance is at least 120 W/m², the WMO-style sunshine threshold.
 
-The training script keeps the final third of the timeline as a chronological
-holdout. With three years of data, the model trains on roughly two years and is
-then checked against a later year that includes another full annual cycle.
+The 13,257 daylight rows are ordered in time: 8,838 (the first two thirds) are
+used for training and 4,419 (the final third) are held out for validation. This
+keeps future observations out of the fitted model and gives the holdout a full
+annual cycle. On that holdout, the model reached 95.2% threshold accuracy and
+a 0.0395 Brier score; a constant climatology baseline reached 60.5% and
+0.2397. These are **reanalysis-to-reanalysis** metrics: the target and the
+strong direct-radiation feature come from the same data source, so they are not
+a claim of equivalent accuracy for a particular Helsinki street or a true
+forecast-as-issued benchmark.
 
-The current artifact contains 13,257 daylight examples: 8,838 for training and
-4,419 for the holdout. On that holdout it reached 95.2% threshold accuracy and
-a 0.0395 Brier score, compared with 60.5% and 0.2397 for a climatology-only
-baseline. These are reanalysis-to-reanalysis metrics, not a claim of equivalent
-accuracy for a specific Helsinki street.
+### Model math and prior assumptions
 
-Internally the model computes `sigmoid(intercept + weighted features)`. Total
-and low cloud, their interaction, precipitation, and rainy-weather codes push
-the probability down. Direct-radiation fraction and sun altitude push it up.
-The two cyclic calendar values are `sin(2π (day - 1)/365.2425)` and
-`cos(2π (day - 1)/365.2425)`, which lets December and January sit next to each
-other rather than at opposite ends of a numerical scale.
+For a feature vector `x`, the model calculates `p = sigmoid(z)`, where
+`sigmoid(z) = 1 / (1 + exp(-z))` and the current fitted log-odds are:
+
+```text
+z = -0.9866
+    - 1.4096 * total_cloud
+    - 0.1914 * low_cloud
+    - 0.6662 * total_cloud * low_cloud
+    - 0.7982 * precipitation_signal
+    - 0.3032 * rainy_weather_code
+    + 8.5981 * direct_radiation_fraction
+    + 2.0229 * sin(sun_altitude)
+    - 0.2483 * sin(season)
+    - 0.2357 * cos(season)
+```
+
+Cloud, low cloud, and precipitation are scaled to `0..1`.
+`rainy_weather_code` is `1` for a WMO weather code of 51 or higher.
+`direct_radiation_fraction` is the horizontal direct-radiation forecast divided
+by `max(25, 750 * sin(sun_altitude))`, then clamped to `0..1`.
+The season pair is `sin(2π(day - 1)/365.2425)` and
+`cos(2π(day - 1)/365.2425)`, so late December and early January remain close
+on the yearly cycle.
+
+This is a deterministic regularised logistic regression, not a Bayesian model:
+it has no posterior distribution or credible intervals. The intercept starts
+at the training set's base-rate log-odds, feature weights start at zero, and
+full-batch gradient descent runs for 1,200 iterations with learning rate `0.7`.
+An L2 penalty of `0.001` applies to non-intercept weights; in a MAP
+interpretation this acts like a weak, zero-centred Gaussian prior that shrinks
+unneeded weights towards zero. After the logistic output, fog, precipitation,
+and high-cloud/low-radiation rules cap the displayed probability conservatively.
 
 Retrain the model with the latest historical data using only the Python
 standard library:

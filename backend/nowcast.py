@@ -20,6 +20,10 @@ DIRECT_SUN_NOWCAST_VERSION = "weather-baseline-v1"
 DIRECT_SUN_WINDOW_MINUTES = 60
 NOWCAST_HORIZONS_MINUTES = (0, 30, 60)
 WMO_SUNSHINE_DNI_THRESHOLD = 120
+DIRECT_SUN_NOWCAST_SCOPE = (
+    "One city-wide open-point estimate from a fixed Helsinki forecast location; "
+    "not a per-neighbourhood forecast."
+)
 MODEL_FEATURE_NAMES = (
     "cloud_cover",
     "low_cloud_cover",
@@ -86,6 +90,7 @@ def direct_sun_nowcast(
         "label": probability_label(probability),
         "samples": samples,
         "model": direct_sun_model_metadata(),
+        "scope": DIRECT_SUN_NOWCAST_SCOPE,
         "note": "Estimate for an open point. Nearby buildings, trees, and a changing local sky can still block direct sun.",
     }
 
@@ -98,6 +103,7 @@ def unavailable_direct_sun_nowcast(reason: str) -> dict[str, Any]:
         "label": "Direct-sun estimate unavailable",
         "samples": [],
         "model": direct_sun_model_metadata(),
+        "scope": DIRECT_SUN_NOWCAST_SCOPE,
         "note": reason,
     }
 

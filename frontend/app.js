@@ -20,6 +20,7 @@ const state = {
   sunTimes: null,
   weather: null,
   showClearSkyPotential: false,
+  showDirectSunNowcast: true,
   buildings: emptyFeatureCollection(),
   shadows: emptyFeatureCollection(),
   liveTimer: null,
@@ -41,7 +42,8 @@ function initialise() {
     'date-time', 'time-slider', 'timeline-date', 'timeline-time', 'live-toggle',
     'refresh-rate', 'now-button', 'calendar-reset', 'sun-orb', 'sun-orbit', 'sun-pointer',
     'solar-state', 'solar-altitude', 'solar-detail', 'sunrise', 'sunset',
-    'weather-callout', 'weather-glyph', 'weather-title', 'weather-detail', 'clear-sky-toggle', 'legend-shadow-label',
+    'weather-callout', 'weather-glyph', 'weather-title', 'weather-detail', 'clear-sky-toggle',
+    'nowcast-control', 'nowcast-toggle', 'nowcast-info', 'nowcast-dialog', 'close-nowcast', 'legend-shadow-label',
     'header-status', 'place-select', 'load-buildings', 'building-status', 'data-note',
     'map-loading', 'map-loading-title', 'map-loading-detail', 'inspector-title',
     'inspector-detail', 'tilt-button', 'locate-button', 'about-button', 'about-dialog',
@@ -185,6 +187,11 @@ function wireControls() {
     applyMapData();
     updateWeatherPanel();
   });
+  elements['nowcast-toggle'].addEventListener('change', () => {
+    state.showDirectSunNowcast = elements['nowcast-toggle'].checked;
+    updateWeatherPanel();
+    updateHeaderStatus();
+  });
 
   elements['place-select'].addEventListener('change', () => {
     const [lat, lng, zoom, pitch] = elements['place-select'].value.split(',').map(Number);
@@ -198,6 +205,11 @@ function wireControls() {
   elements['close-about'].addEventListener('click', () => elements['about-dialog'].close());
   elements['about-dialog'].addEventListener('click', (event) => {
     if (event.target === elements['about-dialog']) elements['about-dialog'].close();
+  });
+  elements['nowcast-info'].addEventListener('click', () => elements['nowcast-dialog'].showModal());
+  elements['close-nowcast'].addEventListener('click', () => elements['nowcast-dialog'].close());
+  elements['nowcast-dialog'].addEventListener('click', (event) => {
+    if (event.target === elements['nowcast-dialog']) elements['nowcast-dialog'].close();
   });
 }
 
@@ -238,6 +250,7 @@ function setDateToNow() {
 function setLive(value) {
   state.live = value;
   elements['live-toggle'].checked = value;
+  updateNowcastControl();
   if (!value) {
     state.showClearSkyPotential = false;
     state.weather = clearSkyPotentialWeather();
@@ -410,6 +423,7 @@ function updateSunPanel() {
 function updateWeatherPanel() {
   const weather = state.weather;
   updateClearSkyToggle();
+  updateNowcastControl();
   if (!weather) {
     elements['weather-callout'].dataset.state = 'loading';
     elements['weather-glyph'].textContent = '◌';
@@ -444,7 +458,7 @@ function updateWeatherPanel() {
       : 'clear';
   elements['weather-callout'].dataset.state = stateName;
   elements['weather-glyph'].textContent = weatherGlyph(weather);
-  const nowcastProbability = directSunNowcastProbability(weather);
+  const nowcastProbability = visibleDirectSunNowcastProbability(weather);
   const shadowSummary = state.showClearSkyPotential
     ? 'clear-sky potential'
     : weather.shadow_visibility === 'unlikely'
@@ -482,6 +496,16 @@ function updateClearSkyToggle() {
     : 'Show clear-sky potential';
 }
 
+function updateNowcastControl() {
+  const toggle = elements['nowcast-toggle'];
+  const control = elements['nowcast-control'];
+  const availableInThisMode = state.live;
+  toggle.checked = state.showDirectSunNowcast;
+  toggle.disabled = !availableInThisMode;
+  control.dataset.live = String(availableInThisMode);
+  control.title = availableInThisMode ? '' : 'The direct-sun estimate is available in live mode only.';
+}
+
 function updateHeaderStatus() {
   const status = elements['header-status'];
   const dot = document.querySelector('.live-dot');
@@ -501,9 +525,9 @@ function updateHeaderStatus() {
     dot.style.background = '#d68a2c';
     return;
   }
-  const nowcastProbability = directSunNowcastProbability(weather);
+  const nowcastProbability = visibleDirectSunNowcastProbability(weather);
   if (nowcastProbability !== null) {
-    status.textContent = `Nowcast · ${nowcastProbability}% direct sun next hour`;
+    status.textContent = `Nowcast beta · ${nowcastProbability}% direct sun next hour`;
     dot.style.background = nowcastProbability >= 70 ? '#46a276' : nowcastProbability >= 35 ? '#d68a2c' : '#788a94';
     return;
   }
@@ -521,6 +545,10 @@ function directSunNowcastProbability(weather) {
   return weather?.nowcast?.available && Number.isFinite(probability)
     ? Math.round(probability)
     : null;
+}
+
+function visibleDirectSunNowcastProbability(weather) {
+  return state.showDirectSunNowcast ? directSunNowcastProbability(weather) : null;
 }
 
 function weatherAdjustedShadowOpacity() {
@@ -612,16 +640,12 @@ function inspectBuilding(event) {
   }
   const length = Math.min(560, height / Math.tan(toRadians(state.solar.altitude)));
   const weather = state.weather;
-  const nowcastProbability = directSunNowcastProbability(weather);
   const realWorldNote = weather?.applies_to_selected_time && weather.available
     ? weather.shadow_visibility === 'unlikely'
       ? `Under ${weather.label.toLowerCase()} sky, it is unlikely to be visible.`
       : `Current sky suggests ${weather.shadow_visibility} shadows.`
     : 'This is a clear-sky projection.';
-  const nowcastNote = nowcastProbability === null
-    ? ''
-    : ` Next hour: ${nowcastProbability}% chance of direct sun at an open point.`;
-  elements['inspector-detail'].textContent = `${Math.round(height)} m high · clear-sky length ${Math.round(length)} m toward ${bearingToCompass((state.solar.azimuth + 180) % 360)}. ${realWorldNote}${nowcastNote}`;
+  elements['inspector-detail'].textContent = `${Math.round(height)} m high · clear-sky length ${Math.round(length)} m toward ${bearingToCompass((state.solar.azimuth + 180) % 360)}. ${realWorldNote}`;
 }
 
 function toggle3d() {

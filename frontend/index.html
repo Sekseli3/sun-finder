@@ -110,6 +110,17 @@
             </div>
           </section>
 
+          <div class="nowcast-row" id="nowcast-control">
+            <label class="toggle-label nowcast-toggle-label" for="nowcast-toggle">
+              <input id="nowcast-toggle" type="checkbox" checked />
+              <span class="toggle" aria-hidden="true"></span>
+              <span>Direct-sun estimate</span>
+            </label>
+            <button class="beta-badge" id="nowcast-info" type="button" aria-controls="nowcast-dialog" aria-label="About the beta direct-sun estimate">
+              BETA <span aria-hidden="true">i</span>
+            </button>
+          </div>
+
           <div class="solar-summary">
             <div class="sun-orb-wrap" aria-hidden="true">
               <div class="sun-orb" id="sun-orb"></div>
@@ -179,7 +190,16 @@
       <p class="eyebrow">ABOUT SUNFINDER</p>
       <h2>Sunlight, block by block.</h2>
       <p>Sunfinder’s Python service calculates the sun direction for Helsinki, fetches building footprints, and projects each estimated building shadow. Your browser renders the interactive map.</p>
-      <p>In live mode, current cloud cover softens or hides the projected shadows. A next-hour direct-sun nowcast uses weather-model cloud and radiation inputs for an open point; nearby buildings and trees can still block the sun. At a selected time, shadows are clearly marked as clear-sky potential. Building footprints load from OpenStreetMap when available. Shadow shapes are an estimate, designed for finding pleasant sun rather than surveying or safety decisions.</p>
+      <p>In live mode, current cloud cover softens or hides the projected shadows. The optional beta direct-sun estimate is a single Helsinki-wide weather signal, while nearby buildings and trees are handled separately by the map geometry. At a selected time, shadows are clearly marked as clear-sky potential. Building footprints load from OpenStreetMap when available. Shadow shapes are an estimate, designed for finding pleasant sun rather than surveying or safety decisions.</p>
+    </dialog>
+
+    <dialog id="nowcast-dialog" class="about-dialog nowcast-dialog">
+      <button id="close-nowcast" class="dialog-close" type="button" aria-label="Close">×</button>
+      <p class="eyebrow">DIRECT-SUN ESTIMATE · BETA</p>
+      <h2>One Helsinki-wide weather signal.</h2>
+      <p>This estimates whether direct sun is likely to reach an unobstructed point in Helsinki during the next hour. It averages weather-model estimates for now, +30 minutes, and +60 minutes.</p>
+      <p>It uses one forecast point in central Helsinki, so it is <strong>not</strong> a separate forecast for every neighbourhood or a promise that the whole city is sunny. Local cloud, trees, and nearby buildings can still block the sun.</p>
+      <p>The map’s building shadows are a separate geometry calculation. This beta estimate uses forecast cloud, low cloud, precipitation, radiation, solar altitude, and time of year—not a local camera or sunshine sensor.</p>
     </dialog>
   </body>
 </html>
