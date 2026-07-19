@@ -202,12 +202,16 @@
       <p class="nowcast-range" id="nowcast-range" hidden></p>
       <details class="nowcast-math">
         <summary>See a small worked example</summary>
-        <p>Imagine a late July day with 60% total cloud, 40% low cloud, 20% rain chance, no rain code, a 35° high sun, and a direct radiation signal of 0.251. The season values are about -0.278 and -0.961. The model adds those clues into a score of 3.57.</p>
-        <code>chance = 1 / (1 + exp(-3.57)) = 0.97</code>
-        <p>So it would show about a 97% chance before the extra fog, rain, and heavy cloud checks.</p>
+        <p>Imagine a late July day with 60% total cloud, 40% low cloud, 20% rain chance, no rain code, a 35° high sun, and a direct radiation signal of 0.251. The season values are about -0.278 and -0.961. The MAP score is 3.5729.</p>
+        <code>MAP chance = 1 / (1 + exp(-3.5729)) = 0.973</code>
+        <p>That is the ordinary logistic part. The Bayesian part also keeps the uncertainty in the learned weights. For these inputs, it gives a score distribution instead of only one score.</p>
+        <code>z | data ≈ Normal(3.5729, 0.2577²)
+90% chance range = sigmoid(3.5729 ± 1.645 × 0.2577)
+                  = 0.959 to 0.982</code>
+        <p>So it shows about a 97% chance, with a 96% to 98% Bayesian model range before the extra fog, rain, and heavy cloud checks.</p>
         <h3>What the range means</h3>
         <p>This is a Bayesian model now. It keeps a range of believable weights for each clue, not just one fixed weight.</p>
-        <p>The live range covers 90% of the model’s posterior guesses. It is a range about the model, not a full weather confidence range. It cannot include every small local cloud or tree.</p>
+        <p>The live range covers 90% of the model’s posterior possibilities. It is a range about the model, not a full weather confidence range. It cannot include every small local cloud or tree.</p>
       </details>
       <p>The building shadows on the map are worked out separately from the sun angle and building shape. This estimate uses cloud, rain chance, radiation, sun height, and the time of year. It does not use a camera or a sunshine sensor.</p>
     </dialog>

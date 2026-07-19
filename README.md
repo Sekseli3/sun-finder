@@ -142,9 +142,9 @@ that day are about `-0.278` and `-0.961`.
 z = -2.8533 - 2.6012(0.60) + 0.4081(0.40) - 1.2060(0.60)(0.40)
     - 1.2874(0.20) + 25.3626(0.2511) + 3.4459(0.574)
     - 0.3300(-0.278) + 0.0689(-0.961)
-  = 3.5718
+  = 3.5729
 
-chance = 1 / (1 + exp(-3.5718)) = 0.973
+chance = 1 / (1 + exp(-3.5729)) = 0.973
 ```
 
 That becomes a 97% chance. The app then has a last sanity check. Fog, rain,
@@ -177,8 +177,19 @@ MCMC chain, which makes it a good fit for this small Python app. Training took
 10 Newton steps on the current three year data set.
 
 For every live forecast row, the app gets a middle probability and a 90% model
-range from that posterior. In the example above, the middle result is 97.3% and
-the 90% model range is 95.9% to 98.2%.
+range from that posterior. For the example above, the feature vector `x` gives:
+
+```text
+xᵀΣx = 0.0664
+sd(z) = sqrt(0.0664) = 0.2577
+z | data ≈ Normal(3.5729, 0.2577²)
+
+90% range for chance
+= sigmoid(3.5729 ± 1.645 * 0.2577)
+= 0.9589 to 0.9820
+```
+
+So the middle result is 97.3% and the 90% model range is 95.9% to 98.2%.
 
 The number on screen averages now, +30 minutes, and +60 minutes. Those three
 rows share the same learned weights, so the app carries the shared covariance
