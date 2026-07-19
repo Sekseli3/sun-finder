@@ -26,6 +26,8 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 
+from backend.nowcast import direct_sun_nowcast, unavailable_direct_sun_nowcast
+
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = APP_ROOT / "frontend"
@@ -248,6 +250,12 @@ def fetch_current_weather() -> dict[str, Any]:
             "latitude": HELSINKI_LATITUDE,
             "longitude": HELSINKI_LONGITUDE,
             "current": "cloud_cover,weather_code,is_day",
+            "hourly": (
+                "cloud_cover,cloud_cover_low,weather_code,"
+                "direct_radiation,direct_normal_irradiance,precipitation_probability"
+            ),
+            "past_hours": 1,
+            "forecast_hours": 3,
             "timezone": "Europe/Helsinki",
         }
     )
@@ -260,12 +268,28 @@ def fetch_current_weather() -> dict[str, Any]:
     current = payload["current"]
     cloud_cover = max(0, min(100, int(round(float(current["cloud_cover"])))))
     weather_code = int(current["weather_code"])
-    return weather_summary(
+    weather = weather_summary(
         cloud_cover=cloud_cover,
         weather_code=weather_code,
         observed_at=str(current.get("time", "")),
         is_day=bool(current.get("is_day", 0)),
     )
+    hourly = payload.get("hourly")
+    if not isinstance(hourly, dict):
+        hourly = {}
+    now = datetime.now(HELSINKI_TIME_ZONE)
+    try:
+        weather["nowcast"] = direct_sun_nowcast(
+            now=now,
+            current=current,
+            hourly=hourly,
+            solar_altitude_at=lambda candidate: solar_position(candidate.astimezone(UTC))["altitude"],
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        print(f"Direct-sun nowcast failed: {error}")
+        weather["nowcast"] = unavailable_direct_sun_nowcast("Forecast data did not include a usable direct-sun estimate.")
+    weather["source"] = "Open-Meteo weather model and hourly forecast"
+    return weather
 
 
 def weather_summary(
@@ -331,7 +355,7 @@ def weather_summary(
         "shadow_visibility": visibility,
         "shadow_opacity": opacity,
         "note": note,
-        "source": "Open-Meteo 15-minute weather model",
+        "source": "Open-Meteo weather model",
     }
 
 
@@ -347,6 +371,7 @@ def unavailable_weather() -> dict[str, Any]:
         "shadow_opacity": 0.58,
         "note": "Showing clear-sky potential. Local clouds can soften or remove real shadows.",
         "source": "Weather data unavailable",
+        "nowcast": unavailable_direct_sun_nowcast("Weather data is unavailable, so there is no direct-sun estimate."),
     }
 
 
@@ -362,6 +387,7 @@ def custom_time_weather() -> dict[str, Any]:
         "shadow_opacity": 0.58,
         "note": "Current cloud cover only applies to live time. This selected time shows clear-sky potential.",
         "source": "Clear-sky geometry",
+        "nowcast": unavailable_direct_sun_nowcast("Direct-sun nowcasts are only available for live time."),
     }
 
 

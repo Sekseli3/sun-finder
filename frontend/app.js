@@ -444,16 +444,22 @@ function updateWeatherPanel() {
       : 'clear';
   elements['weather-callout'].dataset.state = stateName;
   elements['weather-glyph'].textContent = weatherGlyph(weather);
+  const nowcastProbability = directSunNowcastProbability(weather);
   const shadowSummary = state.showClearSkyPotential
     ? 'clear-sky potential'
     : weather.shadow_visibility === 'unlikely'
       ? 'shadows hidden'
       : `${weather.shadow_visibility} shadows`;
-  elements['weather-title'].textContent = `${weather.label} · ${shadowSummary}`;
+  elements['weather-title'].textContent = nowcastProbability === null
+    ? `${weather.label} · ${shadowSummary}`
+    : `${nowcastProbability}% direct sun next hour`;
   const potentialSuffix = state.showClearSkyPotential
     ? ' Showing clear-sky geometry only — not an actual visible shadow.'
     : '';
-  elements['weather-detail'].textContent = `${weather.note} ${weather.cloud_cover}% cloud cover · 15-min weather model.${potentialSuffix}`;
+  const nowcastDetail = nowcastProbability === null
+    ? ''
+    : ` Next-hour nowcast: ${nowcastProbability}% chance of direct sun at an open point. ${weather.nowcast.note}`;
+  elements['weather-detail'].textContent = `${weather.note} ${weather.cloud_cover}% cloud cover.${nowcastDetail}${potentialSuffix}`;
   finishWeatherPanel();
 }
 
@@ -495,6 +501,12 @@ function updateHeaderStatus() {
     dot.style.background = '#d68a2c';
     return;
   }
+  const nowcastProbability = directSunNowcastProbability(weather);
+  if (nowcastProbability !== null) {
+    status.textContent = `Nowcast · ${nowcastProbability}% direct sun next hour`;
+    dot.style.background = nowcastProbability >= 70 ? '#46a276' : nowcastProbability >= 35 ? '#d68a2c' : '#788a94';
+    return;
+  }
   if (weather.shadow_visibility === 'unlikely') {
     status.textContent = `${weather.label} · direct shadows unlikely`;
     dot.style.background = '#788a94';
@@ -502,6 +514,13 @@ function updateHeaderStatus() {
   }
   status.textContent = `${weather.label} · ${weather.shadow_visibility} shadows`;
   dot.style.background = weather.shadow_visibility === 'defined' ? '#46a276' : '#d68a2c';
+}
+
+function directSunNowcastProbability(weather) {
+  const probability = Number(weather?.nowcast?.probability);
+  return weather?.nowcast?.available && Number.isFinite(probability)
+    ? Math.round(probability)
+    : null;
 }
 
 function weatherAdjustedShadowOpacity() {
@@ -593,12 +612,16 @@ function inspectBuilding(event) {
   }
   const length = Math.min(560, height / Math.tan(toRadians(state.solar.altitude)));
   const weather = state.weather;
+  const nowcastProbability = directSunNowcastProbability(weather);
   const realWorldNote = weather?.applies_to_selected_time && weather.available
     ? weather.shadow_visibility === 'unlikely'
       ? `Under ${weather.label.toLowerCase()} sky, it is unlikely to be visible.`
       : `Current sky suggests ${weather.shadow_visibility} shadows.`
     : 'This is a clear-sky projection.';
-  elements['inspector-detail'].textContent = `${Math.round(height)} m high · clear-sky length ${Math.round(length)} m toward ${bearingToCompass((state.solar.azimuth + 180) % 360)}. ${realWorldNote}`;
+  const nowcastNote = nowcastProbability === null
+    ? ''
+    : ` Next hour: ${nowcastProbability}% chance of direct sun at an open point.`;
+  elements['inspector-detail'].textContent = `${Math.round(height)} m high · clear-sky length ${Math.round(length)} m toward ${bearingToCompass((state.solar.azimuth + 180) % 360)}. ${realWorldNote}${nowcastNote}`;
 }
 
 function toggle3d() {
