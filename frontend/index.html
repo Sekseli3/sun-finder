@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A live sunlight and building-shadow map for Helsinki."
+    />
+    <title>Sunfinder — Helsinki sunlight map</title>
+    <link rel="preconnect" href="https://unpkg.com" />
+    <link rel="preconnect" href="https://tile.openstreetmap.org" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#map" aria-label="Sunfinder home">
+          <span class="brand-mark" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            <b></b>
+          </span>
+          <span>
+            <strong>sunfinder</strong>
+            <small>HELSINKI</small>
+          </span>
+        </a>
+
+        <div class="topbar-center">
+          <span class="live-dot" aria-hidden="true"></span>
+          <span id="header-status">Live sun model</span>
+        </div>
+
+        <div class="topbar-actions">
+          <button class="icon-button" id="locate-button" type="button" title="Use my location" aria-label="Use my location">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.4A3.6 3.6 0 1 0 12 15.6 3.6 3.6 0 0 0 12 8.4Zm0-6.4v3m0 14v3M2 12h3m14 0h3M5 5l2.1 2.1m9.8 9.8L19 19m0-14-2.1 2.1M7.1 16.9 5 19"/></svg>
+          </button>
+          <button class="icon-button" id="about-button" type="button" title="About the map" aria-label="About the map">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 10.8v5.1m0-8.1h.01"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="map-stage">
+        <div id="map" aria-label="Interactive map of Helsinki showing sun and building shadows"></div>
+        <div class="map-vignette" aria-hidden="true"></div>
+
+        <section class="control-panel panel" aria-label="Sun controls">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">SUN CONDITIONS</p>
+              <h1>Find the light</h1>
+            </div>
+            <button class="now-button" id="now-button" type="button">Now</button>
+          </div>
+
+          <label class="field-label" for="date-time">Helsinki time</label>
+          <div class="date-row">
+            <input id="date-time" type="datetime-local" step="60" />
+            <button id="calendar-reset" class="date-reset" type="button" aria-label="Reset to current time" title="Reset to current time">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.65M4 4v4.5h4.5"/></svg>
+            </button>
+          </div>
+
+          <div class="live-row">
+            <label class="toggle-label" for="live-toggle">
+              <input id="live-toggle" type="checkbox" checked />
+              <span class="toggle" aria-hidden="true"></span>
+              <span>Keep live</span>
+            </label>
+            <label class="refresh-select" for="refresh-rate">
+              <span>Update</span>
+              <select id="refresh-rate" aria-label="Live update frequency">
+                <option value="1" selected>every min</option>
+                <option value="5">every 5 min</option>
+                <option value="10">every 10 min</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="timeline-wrap">
+            <div class="timeline-topline">
+              <span id="timeline-date">Today</span>
+              <span id="timeline-time">--:--</span>
+            </div>
+            <input id="time-slider" class="time-slider" type="range" min="0" max="1439" value="720" aria-label="Time of day" />
+            <div class="time-ticks" aria-hidden="true">
+              <span>00</span><span>06</span><span>12</span><span>18</span><span>24</span>
+            </div>
+          </div>
+
+          <div class="view-switch" role="group" aria-label="Map view">
+            <button class="view-option active" data-view="shadows" type="button">Shadows</button>
+            <button class="view-option" data-view="sunlight" type="button">Sun potential</button>
+            <button class="view-option" data-view="night" type="button">Night</button>
+          </div>
+
+          <section class="weather-callout" id="weather-callout" data-state="loading" aria-live="polite">
+            <span class="weather-glyph" id="weather-glyph" aria-hidden="true">◌</span>
+            <div>
+              <strong id="weather-title">Checking sky…</strong>
+              <span class="weather-detail" id="weather-detail">Weather-adjusted shadows will load shortly.</span>
+              <button class="clear-sky-toggle" id="clear-sky-toggle" type="button" aria-pressed="false" hidden></button>
+            </div>
+          </section>
+
+          <div class="solar-summary">
+            <div class="sun-orb-wrap" aria-hidden="true">
+              <div class="sun-orb" id="sun-orb"></div>
+              <div class="sun-orbit" id="sun-orbit"><i id="sun-pointer"></i></div>
+            </div>
+            <div class="solar-copy">
+              <p id="solar-state">Calculating sun…</p>
+              <strong id="solar-altitude">--°</strong>
+              <span id="solar-detail">Sun altitude</span>
+            </div>
+            <div class="solar-stats">
+              <span><b id="sunrise">--:--</b>sunrise</span>
+              <span><b id="sunset">--:--</b>sunset</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="place-panel panel" aria-label="Map location and building data">
+          <p class="eyebrow">MAP DATA</p>
+          <label class="sr-only" for="place-select">Jump to a Helsinki place</label>
+          <select id="place-select">
+            <option value="60.1697,24.9525,15.8,58">Senate Square</option>
+            <option value="60.1674,24.9436,16.4,58">Esplanadi</option>
+            <option value="60.1765,24.9331,15.5,56">Töölönlahti</option>
+            <option value="60.1841,24.9507,15.4,58">Kallio</option>
+            <option value="60.1609,24.9419,16.1,57">Kaivopuisto</option>
+          </select>
+          <p class="building-status" id="building-status">Loading visible map…</p>
+          <button id="load-buildings" class="load-button" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>
+            Refresh visible map
+          </button>
+          <p class="data-note" id="data-note">OpenStreetMap data for the visible area.</p>
+        </section>
+
+        <section class="inspector panel" id="inspector" aria-live="polite">
+          <p class="eyebrow">AT THIS BLOCK</p>
+          <p id="inspector-title">Tap a building</p>
+          <p class="inspector-detail" id="inspector-detail">See its estimated shadow length and current sun exposure.</p>
+        </section>
+
+        <div class="legend panel" aria-label="Map legend">
+          <span><i class="legend-swatch sunlight"></i>potentially sunlit face</span>
+          <span><i class="legend-swatch shadow"></i><span id="legend-shadow-label">projected shadow</span></span>
+        </div>
+
+        <button class="layers-button panel" id="tilt-button" type="button" aria-pressed="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Zm-8 9 8 4.5 8-4.5M4 15l8 4.5 8-4.5"/></svg>
+          <span>3D view</span>
+        </button>
+
+        <div class="map-loading panel" id="map-loading" role="status" aria-live="polite" hidden>
+          <span class="map-loading-spinner" aria-hidden="true"></span>
+          <div>
+            <strong id="map-loading-title">Loading visible map…</strong>
+            <span id="map-loading-detail">Fetching building data…</span>
+          </div>
+        </div>
+
+        <div class="map-attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors</div>
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+      </main>
+    </div>
+
+    <dialog id="about-dialog" class="about-dialog">
+      <button id="close-about" class="dialog-close" type="button" aria-label="Close">×</button>
+      <p class="eyebrow">ABOUT SUNFINDER</p>
+      <h2>Sunlight, block by block.</h2>
+      <p>Sunfinder’s Python service calculates the sun direction for Helsinki, fetches building footprints, and projects each estimated building shadow. Your browser renders the interactive map.</p>
+      <p>In live mode, current cloud cover softens or hides the projected shadows. At a selected time, shadows are clearly marked as clear-sky potential. Building footprints load from OpenStreetMap when available. Shadow shapes are an estimate, designed for finding pleasant sun rather than surveying or safety decisions.</p>
+    </dialog>
+  </body>
+</html>
