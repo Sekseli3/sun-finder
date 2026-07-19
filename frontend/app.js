@@ -15,7 +15,6 @@ const state = {
   date: new Date(),
   live: true,
   refreshMinutes: 1,
-  view: 'shadows',
   is3d: true,
   map: null,
   solar: null,
@@ -29,7 +28,6 @@ const state = {
   hasLiveBuildingData: false,
   buildingsDirty: true,
   shadowsDirty: true,
-  renderedShadowsVisible: false,
   liveTimer: null,
   refreshDebounce: null,
   abortController: null,
@@ -186,14 +184,6 @@ function wireControls() {
   });
   elements['calendar-reset'].addEventListener('click', setDateToNow);
 
-  document.querySelectorAll('.view-option').forEach((button) => {
-    button.addEventListener('click', () => {
-      state.view = button.dataset.view;
-      document.querySelectorAll('.view-option').forEach((item) => item.classList.toggle('active', item === button));
-      applyMapData();
-      updateWeatherPanel();
-    });
-  });
   document.querySelectorAll('.dimension-option').forEach((button) => {
     button.addEventListener('click', () => setMapDimension(button.dataset.dimension === '3d'));
   });
@@ -471,26 +461,20 @@ function applyMapData() {
     state.map.getSource('building-footprints').setData(state.buildings);
     state.buildingsDirty = false;
   }
-  const showShadows = state.view === 'shadows';
-  if (state.shadowsDirty || state.renderedShadowsVisible !== showShadows) {
-    state.map.getSource('building-shadows').setData(showShadows ? state.shadows : emptyFeatureCollection());
+  if (state.shadowsDirty) {
+    state.map.getSource('building-shadows').setData(state.shadows);
     state.shadowsDirty = false;
-    state.renderedShadowsVisible = showShadows;
   }
   state.map.setPaintProperty('building-shadows', 'fill-opacity', weatherAdjustedShadowOpacity());
-  state.map.setPaintProperty('building-extrusions', 'fill-extrusion-opacity', state.view === 'night' ? 0.82 : 0.9);
+  state.map.setPaintProperty('building-extrusions', 'fill-extrusion-opacity', 0.9);
   state.map.setPaintProperty('building-extrusions', 'fill-extrusion-color', buildingSunColor());
-  state.map.setPaintProperty('osm', 'raster-saturation', state.view === 'night' ? -0.78 : -0.58);
-  state.map.setPaintProperty('osm', 'raster-brightness-max', state.view === 'night' ? 0.57 : 0.92);
+  state.map.setPaintProperty('osm', 'raster-saturation', -0.58);
+  state.map.setPaintProperty('osm', 'raster-brightness-max', 0.92);
 }
 
 function buildingSunColor() {
   const sunIsUp = state.solar?.altitude > 0;
-  return state.view === 'night'
-    ? '#2b3b4a'
-    : !sunIsUp
-      ? '#536474'
-      : '#c9934d';
+  return sunIsUp ? '#c9934d' : '#536474';
 }
 
 function updateSunPanel() {
@@ -576,8 +560,7 @@ function finishWeatherPanel() {
 function updateClearSkyToggle() {
   const toggle = elements['clear-sky-toggle'];
   const weather = state.weather;
-  const canShowPotential = state.view === 'shadows'
-    && weather?.applies_to_selected_time
+  const canShowPotential = weather?.applies_to_selected_time
     && weather.available
     && Number(weather.shadow_opacity) === 0;
   if (!canShowPotential) state.showClearSkyPotential = false;
@@ -664,7 +647,7 @@ function visibleDirectSunNowcastProbability(weather) {
 }
 
 function weatherAdjustedShadowOpacity() {
-  if (state.view !== 'shadows' || state.solar?.altitude <= 0) return 0;
+  if (state.solar?.altitude <= 0) return 0;
   const weather = state.weather;
   if (state.showClearSkyPotential && weather?.applies_to_selected_time && weather.available && Number(weather.shadow_opacity) === 0) {
     return 0.58;
@@ -675,10 +658,6 @@ function weatherAdjustedShadowOpacity() {
 
 function updateLegendShadowLabel() {
   const label = elements['legend-shadow-label'];
-  if (state.view !== 'shadows') {
-    label.textContent = 'projected shadow';
-    return;
-  }
   if (state.showClearSkyPotential) {
     label.textContent = 'clear-sky potential';
     return;
