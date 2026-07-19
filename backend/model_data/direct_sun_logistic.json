@@ -1,5 +1,5 @@
 {
-  "version": "helsinki-archive-logistic-v1",
+  "version": "helsinki-archive-logistic-v2-seasonal",
   "kind": "logistic regression",
   "definition": "Direct normal irradiance above 120 W/m².",
   "features": [
@@ -9,28 +9,43 @@
     "precipitation_signal",
     "precipitation_weather",
     "direct_radiation_fraction",
-    "sun_altitude_sine"
+    "sun_altitude_sine",
+    "season_sine",
+    "season_cosine"
   ],
   "weights": [
-    -1.1229263401,
-    -1.1329031945,
-    -0.2572271613,
-    -0.8672747436,
-    -0.3930505886,
-    -0.4373461942,
-    8.75103308,
-    2.5835599879
+    -0.9865969275,
+    -1.4095939359,
+    -0.1913615201,
+    -0.6661961921,
+    -0.7981573766,
+    -0.303164749,
+    8.5980701007,
+    2.0229217647,
+    -0.2483487576,
+    -0.2357491061
   ],
   "training": {
     "source": "Open-Meteo Historical Weather API reanalysis",
     "location": "Helsinki, Finland",
-    "start_date": "2025-07-14",
+    "start_date": "2023-07-15",
     "end_date": "2026-07-13",
-    "daylight_samples": 4420,
+    "daylight_samples": 13257,
+    "training_samples": 8838,
+    "validation_samples": 4419,
+    "split": "chronological holdout",
     "validation": {
-      "brier_score": 0.0456,
-      "accuracy_at_50_percent": 0.9446
+      "model": {
+        "brier_score": 0.0395,
+        "accuracy_at_50_percent": 0.952,
+        "positive_rate": 0.6051
+      },
+      "climatology": {
+        "brier_score": 0.2397,
+        "accuracy_at_50_percent": 0.6051,
+        "constant_probability": 0.5776
+      }
     },
-    "generated_at": "2026-07-19T12:29:13.570398Z"
+    "generated_at": "2026-07-19T12:45:52.491271Z"
   }
 }

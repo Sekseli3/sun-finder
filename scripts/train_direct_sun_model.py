@@ -85,6 +85,7 @@ def fetch_training_rows(start_date: date, end_date: date) -> list[tuple[list[flo
                 fallback=1 - cloud,
             ),
             sun_altitude=altitude,
+            day_of_year=timestamp.timetuple().tm_yday,
         )
         target = int(direct_normal_irradiance >= WMO_SUNSHINE_DNI_THRESHOLD)
         rows.append((features, target))
@@ -129,27 +130,46 @@ def metrics(rows: list[tuple[list[float], int]], weights: list[float]) -> dict[s
     targets = [target for _, target in rows]
     brier = sum((prediction - target) ** 2 for prediction, target in zip(predictions, targets)) / len(rows)
     accuracy = sum((prediction >= 0.5) == bool(target) for prediction, target in zip(predictions, targets)) / len(rows)
-    return {"brier_score": round(brier, 4), "accuracy_at_50_percent": round(accuracy, 4)}
+    return {
+        "brier_score": round(brier, 4),
+        "accuracy_at_50_percent": round(accuracy, 4),
+        "positive_rate": round(sum(targets) / len(targets), 4),
+    }
+
+
+def climatology_metrics(rows: list[tuple[list[float], int]], probability: float) -> dict[str, float]:
+    targets = [target for _, target in rows]
+    brier = sum((probability - target) ** 2 for target in targets) / len(targets)
+    accuracy = sum((probability >= 0.5) == bool(target) for target in targets) / len(targets)
+    return {
+        "brier_score": round(brier, 4),
+        "accuracy_at_50_percent": round(accuracy, 4),
+        "constant_probability": round(probability, 4),
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--days", type=int, default=365, help="Historical days to fetch (default: 365).")
-    parser.add_argument("--iterations", type=int, default=1800, help="Gradient-descent iterations (default: 1800).")
+    parser.add_argument("--days", type=int, default=1095, help="Historical days to fetch (default: 1095 / three years).")
+    parser.add_argument("--iterations", type=int, default=1200, help="Gradient-descent iterations (default: 1200).")
     parser.add_argument("--learning-rate", type=float, default=0.7, help="Gradient-descent learning rate (default: 0.7).")
+    parser.add_argument("--validation-fraction", type=float, default=1 / 3, help="Final chronological fraction reserved for validation (default: one third).")
     parser.add_argument("--output", type=Path, default=TRAINED_MODEL_PATH, help="Output JSON model path.")
     args = parser.parse_args()
     if args.days < 30:
         parser.error("--days must be at least 30")
+    if not 0 < args.validation_fraction < 0.5:
+        parser.error("--validation-fraction must be greater than 0 and less than 0.5")
 
     end_date = datetime.now(UTC).date() - timedelta(days=6)
     start_date = end_date - timedelta(days=args.days - 1)
     rows = fetch_training_rows(start_date, end_date)
-    split = max(1, round(len(rows) * 0.8))
+    split = max(1, round(len(rows) * (1 - args.validation_fraction)))
     training_rows, validation_rows = rows[:split], rows[split:]
     weights = train_logistic(training_rows, iterations=args.iterations, learning_rate=args.learning_rate)
+    training_positive_rate = sum(target for _, target in training_rows) / len(training_rows)
     model = {
-        "version": "helsinki-archive-logistic-v1",
+        "version": "helsinki-archive-logistic-v2-seasonal",
         "kind": "logistic regression",
         "definition": f"Direct normal irradiance above {WMO_SUNSHINE_DNI_THRESHOLD} W/m².",
         "features": list(MODEL_FEATURE_NAMES),
@@ -160,7 +180,13 @@ def main() -> None:
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "daylight_samples": len(rows),
-            "validation": metrics(validation_rows or training_rows, weights),
+            "training_samples": len(training_rows),
+            "validation_samples": len(validation_rows),
+            "split": "chronological holdout",
+            "validation": {
+                "model": metrics(validation_rows or training_rows, weights),
+                "climatology": climatology_metrics(validation_rows or training_rows, training_positive_rate),
+            },
             "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         },
     }

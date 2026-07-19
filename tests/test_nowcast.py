@@ -7,7 +7,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from backend.main import fetch_current_weather
-from backend.nowcast import direct_sun_nowcast, direct_sun_probability, hourly_conditions_near
+from backend.nowcast import direct_sun_nowcast, direct_sun_probability, hourly_conditions_near, seasonal_features
 
 
 HELSINKI = ZoneInfo("Europe/Helsinki")
@@ -82,6 +82,15 @@ class DirectSunNowcastTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"cloud_cover": 80})
+
+    def test_season_features_wrap_across_new_year(self) -> None:
+        new_year = seasonal_features(1)
+        year_end = seasonal_features(366)
+        summer = seasonal_features(172)
+        winter = seasonal_features(355)
+
+        self.assertLess(sum((left - right) ** 2 for left, right in zip(new_year, year_end)), 0.001)
+        self.assertLess(sum(left * right for left, right in zip(summer, winter)), -0.9)
 
     def test_weather_fetch_exposes_the_trained_nowcast(self) -> None:
         now = datetime.now(HELSINKI).replace(minute=0, second=0, microsecond=0)

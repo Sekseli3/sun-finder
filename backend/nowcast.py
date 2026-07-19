@@ -28,6 +28,8 @@ MODEL_FEATURE_NAMES = (
     "precipitation_weather",
     "direct_radiation_fraction",
     "sun_altitude_sine",
+    "season_sine",
+    "season_cosine",
 )
 TRAINED_MODEL_PATH = Path(__file__).with_name("model_data") / "direct_sun_logistic.json"
 
@@ -58,6 +60,7 @@ def direct_sun_nowcast(
         altitude = solar_altitude_at(target)
         probability = direct_sun_probability(
             sun_altitude=altitude,
+            day_of_year=target.timetuple().tm_yday,
             cloud_cover=forecast.get("cloud_cover"),
             low_cloud_cover=forecast.get("cloud_cover_low"),
             weather_code=forecast.get("weather_code"),
@@ -102,6 +105,7 @@ def unavailable_direct_sun_nowcast(reason: str) -> dict[str, Any]:
 def direct_sun_probability(
     *,
     sun_altitude: float,
+    day_of_year: int | None = None,
     cloud_cover: Any,
     low_cloud_cover: Any,
     weather_code: Any,
@@ -135,6 +139,7 @@ def direct_sun_probability(
         weather_code=code,
         radiation_signal=radiation_signal,
         sun_altitude=sun_altitude,
+        day_of_year=day_of_year,
     )
     if trained_probability is not None:
         return conservative_probability_cap(
@@ -210,6 +215,7 @@ def trained_model_probability(
     weather_code: int | None,
     radiation_signal: float,
     sun_altitude: float,
+    day_of_year: int | None,
 ) -> float | None:
     model = load_trained_model()
     if model is None:
@@ -221,6 +227,7 @@ def trained_model_probability(
         weather_code=weather_code,
         radiation_signal=radiation_signal,
         sun_altitude=sun_altitude,
+        day_of_year=day_of_year,
     )
     weights = model["weights"]
     return sigmoid(weights[0] + sum(weight * feature for weight, feature in zip(weights[1:], features))) * 100
@@ -234,7 +241,9 @@ def logistic_features(
     weather_code: int | None,
     radiation_signal: float,
     sun_altitude: float,
+    day_of_year: int | None,
 ) -> list[float]:
+    season_sine, season_cosine = seasonal_features(day_of_year)
     return [
         cloud,
         low_cloud,
@@ -243,7 +252,16 @@ def logistic_features(
         1.0 if weather_code is not None and weather_code >= 51 else 0.0,
         radiation_signal,
         max(0.0, math.sin(math.radians(sun_altitude))),
+        season_sine,
+        season_cosine,
     ]
+
+
+def seasonal_features(day_of_year: int | None) -> tuple[float, float]:
+    """Encode the calendar as a continuous annual cycle, including leap years."""
+    day = 172 if day_of_year is None else max(1, min(366, day_of_year))
+    angle = 2 * math.pi * (day - 1) / 365.2425
+    return math.sin(angle), math.cos(angle)
 
 
 def conservative_probability_cap(
