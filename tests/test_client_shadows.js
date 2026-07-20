@@ -10,7 +10,16 @@ global.window = {
 global.document = {};
 
 const appSource = fs.readFileSync('frontend/app.js', 'utf8');
-vm.runInThisContext(`${appSource}\nglobalThis.__sunfinderTest = { state, localSolarPosition, createClientShadows, tileBuildingsForVisibleMap };`);
+vm.runInThisContext(`${appSource}\nglobalThis.__sunfinderTest = { state, localSolarPosition, createClientShadows, tileBuildingsForVisibleMap, weatherAdjustedShadowOpacity };`);
+
+assert.equal(globalThis.__sunfinderTest.state.showClearSkyPotential, true);
+globalThis.__sunfinderTest.state.solar = { altitude: 25 };
+globalThis.__sunfinderTest.state.weather = {
+  applies_to_selected_time: true,
+  available: true,
+  shadow_opacity: 0
+};
+assert.equal(globalThis.__sunfinderTest.weatherAdjustedShadowOpacity(), 0.58);
 
 const solar = globalThis.__sunfinderTest.localSolarPosition(new Date('2026-07-19T09:00:00Z'));
 assert.equal(solar.altitude, 47.95928);

@@ -30,7 +30,10 @@ const state = {
   solar: null,
   sunTimes: null,
   weather: null,
-  showClearSkyPotential: false,
+  // Keep possible sunshine visible unless someone explicitly opts into the
+  // live cloud adjustment. Missing a sunny gap is more costly than showing
+  // a possible shadow that clouds may hide.
+  showClearSkyPotential: true,
   showDirectSunNowcast: true,
   buildings: emptyFeatureCollection(),
   shadows: emptyFeatureCollection(),
@@ -300,7 +303,6 @@ function setLive(value) {
   elements['live-toggle'].checked = value;
   updateNowcastControl();
   if (!value) {
-    state.showClearSkyPotential = false;
     state.weather = clearSkyPotentialWeather();
     updateWeatherPanel();
     applyMapData();
@@ -585,9 +587,11 @@ function updateWeatherPanel() {
       : `${weather.shadow_visibility} shadows`;
   elements['weather-title'].textContent = nowcastProbability === null
     ? `${weather.label} · ${shadowSummary}`
-    : `${nowcastProbability}% direct sun next hour`;
+    : state.showClearSkyPotential
+      ? `Clear-sky potential · ${nowcastProbability}% direct sun next hour`
+      : `${nowcastProbability}% direct sun next hour`;
   const potentialSuffix = state.showClearSkyPotential
-    ? ' Showing clear-sky geometry only — not an actual visible shadow.'
+    ? ' The map shows where the sun could reach if clouds open. It does not confirm a visible shadow right now.'
     : '';
   const nowcastDetail = nowcastProbability === null
     ? ''
@@ -604,9 +608,7 @@ function updateClearSkyToggle() {
   const toggle = elements['clear-sky-toggle'];
   const weather = state.weather;
   const canShowPotential = weather?.applies_to_selected_time
-    && weather.available
-    && Number(weather.shadow_opacity) === 0;
-  if (!canShowPotential) state.showClearSkyPotential = false;
+    && weather.available;
   toggle.hidden = !canShowPotential;
   toggle.setAttribute('aria-pressed', String(state.showClearSkyPotential));
   toggle.textContent = state.showClearSkyPotential
@@ -691,10 +693,8 @@ function visibleDirectSunNowcastProbability(weather) {
 
 function weatherAdjustedShadowOpacity() {
   if (state.solar?.altitude <= 0) return 0;
+  if (state.showClearSkyPotential) return 0.58;
   const weather = state.weather;
-  if (state.showClearSkyPotential && weather?.applies_to_selected_time && weather.available && Number(weather.shadow_opacity) === 0) {
-    return 0.58;
-  }
   if (weather?.applies_to_selected_time && weather.available) return Number(weather.shadow_opacity);
   return 0.58;
 }

@@ -41,11 +41,12 @@ Open [http://localhost:4173](http://localhost:4173).
 - `GET /api/scene` remains available for a complete server-side scene response.
 - The backend calculates sun direction in the `Europe/Helsinki` time zone,
   including daylight-saving transitions.
-- In live mode, the backend also retrieves Helsinki cloud cover and fades or
-  suppresses projected shadows when direct sun is unlikely. It also estimates
-  the chance of direct sun over the next hour. These are weather-model
-  estimates, not a local sky observation. For any manually selected time, the
-  map deliberately shows **clear-sky potential**.
+- In live mode, the backend retrieves Helsinki cloud cover and estimates the
+  chance of direct sun over the next hour. The map starts with
+  **clear-sky potential** so a pessimistic cloud estimate does not hide a
+  possible sunny gap. Turn it off to fade or suppress shadows using the live
+  sky estimate. These are weather-model estimates, not a local sky
+  observation. A manually selected time always shows clear-sky potential.
 - The normal building path uses compact OpenFreeMap/OpenMapTiles building tiles
   from Helsinki's map tile service. MapLibre keeps nearby tiles in its browser
   cache as you pan. The Python fallback uses Helsinki's official WFS building

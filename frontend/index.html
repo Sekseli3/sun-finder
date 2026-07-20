@@ -108,8 +108,8 @@
             <span class="weather-glyph" id="weather-glyph" aria-hidden="true">◌</span>
             <div>
               <strong id="weather-title">Checking sky…</strong>
-              <span class="weather-detail" id="weather-detail">Weather-adjusted shadows will load shortly.</span>
-              <button class="clear-sky-toggle" id="clear-sky-toggle" type="button" aria-pressed="false" hidden></button>
+              <span class="weather-detail" id="weather-detail">Possible clear-sky shadows will load shortly.</span>
+              <button class="clear-sky-toggle" id="clear-sky-toggle" type="button" aria-pressed="true" hidden></button>
             </div>
           </section>
 
@@ -186,7 +186,7 @@
       <p class="eyebrow">ABOUT SUNFINDER</p>
       <h2>Sunlight, block by block.</h2>
       <p>Sunfinder’s Python service supplies the sun angle, sky estimate, and direct sun nowcast. Compact building tiles load in the browser, and the browser projects their shadows while you move through time.</p>
-      <p>In live mode, cloud cover softens or hides the projected shadows. The beta direct sun estimate is one city level hint. Buildings and trees are handled separately by the map. Pick another time and the map shows clear sky potential instead. Building tiles are based on OpenStreetMap data. Use this to find a nice spot in the sun, not as a survey or safety tool.</p>
+      <p>In live mode, cloud cover tells you how likely direct shadows are. The map starts with clear-sky potential, so it still shows where sunlight could reach if clouds open. Turn it off to make shadows follow the sky estimate. The beta direct sun estimate is one city level hint. Buildings and trees are handled separately by the map. Building tiles are based on OpenStreetMap data. Use this to find a nice spot in the sun, not as a survey or safety tool.</p>
     </dialog>
 
     <dialog id="nowcast-dialog" class="about-dialog nowcast-dialog">
