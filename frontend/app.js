@@ -6,7 +6,14 @@
  * building footprints, and projects the shadow geometry.
  */
 
-const HELSINKI = { lat: 60.1699, lng: 24.9384, timeZone: 'Europe/Helsinki' };
+const HELSINKI = { timeZone: 'Europe/Helsinki' };
+const DEFAULT_MAP_VIEW = {
+  lat: 60.1657789,
+  lng: 24.9313873,
+  zoom: 16.35,
+  pitch: 58,
+  bearing: -18
+};
 const DEFAULT_BUILDING_HEIGHT = 15;
 const BUILDING_RETRY_DELAY_MS = 1_800;
 const MAX_BUILDING_RETRIES = 2;
@@ -72,10 +79,10 @@ function initialiseMap() {
 
   const map = new maplibregl.Map({
     container: 'map',
-    center: [HELSINKI.lng, HELSINKI.lat],
-    zoom: 14.15,
-    pitch: 54,
-    bearing: -18,
+    center: [DEFAULT_MAP_VIEW.lng, DEFAULT_MAP_VIEW.lat],
+    zoom: DEFAULT_MAP_VIEW.zoom,
+    pitch: DEFAULT_MAP_VIEW.pitch,
+    bearing: DEFAULT_MAP_VIEW.bearing,
     antialias: true,
     attributionControl: false,
     style: {
