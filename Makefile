@@ -12,3 +12,5 @@ test:
 check:
 	python3 -m compileall -q backend
 	python3 -m unittest discover -s tests
+	node --check frontend/app.js
+	node tests/test_client_shadows.js

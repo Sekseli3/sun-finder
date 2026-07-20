@@ -1,12 +1,11 @@
 /* global maplibregl */
 
 /*
- * The map deliberately stays light: it only owns interaction and rendering.
- * /api/scene is the Python service that calculates solar geometry, obtains
- * building footprints, and projects the shadow geometry.
+ * The map owns interaction, visible building tiles, and quick local shadows.
+ * Python supplies solar geometry, sky conditions, and the Bayesian nowcast.
  */
 
-const HELSINKI = { timeZone: 'Europe/Helsinki' };
+const HELSINKI = { lat: 60.1699, lng: 24.9384, timeZone: 'Europe/Helsinki' };
 const DEFAULT_MAP_VIEW = {
   lat: 60.1657789,
   lng: 24.9313873,
@@ -15,8 +14,12 @@ const DEFAULT_MAP_VIEW = {
   bearing: -18
 };
 const DEFAULT_BUILDING_HEIGHT = 15;
-const BUILDING_RETRY_DELAY_MS = 1_800;
-const MAX_BUILDING_RETRIES = 2;
+const MAX_SHADOW_METERS = 560;
+const METERS_PER_DEGREE_LAT = 111_320;
+const BUILDING_TILE_SOURCE = 'helsinki-building-tiles';
+const BUILDING_TILE_LAYER = 'building';
+const BUILDING_TILE_URL = 'https://maptiles.api.hel.fi/data/helsinki.json';
+const CONDITIONS_DEBOUNCE_MS = 260;
 
 const state = {
   date: new Date(),
@@ -32,19 +35,19 @@ const state = {
   buildings: emptyFeatureCollection(),
   shadows: emptyFeatureCollection(),
   buildingsBoundsKey: null,
-  hasLiveBuildingData: false,
+  buildingTileFingerprint: null,
+  buildingTilesFailed: false,
   buildingsDirty: true,
   shadowsDirty: true,
   liveTimer: null,
   refreshDebounce: null,
-  abortController: null,
-  sceneRequestId: 0,
+  shadowPreviewFrame: null,
+  buildingTileSyncTimer: null,
+  buildingFallbackAbortController: null,
+  buildingFallbackRequestId: 0,
   conditionsAbortController: null,
   conditionsRequestId: 0,
-  mapMoveRequestId: 0,
-  buildingRetryTimer: null,
-  buildingRetryBounds: null,
-  buildingRetryCount: 0
+  mapMoveRequestId: 0
 };
 
 const elements = {};
@@ -118,7 +121,18 @@ function initialiseMap() {
     map.on('mouseleave', 'building-extrusions', () => { map.getCanvas().style.cursor = ''; });
   });
   map.on('click', inspectBuilding);
+  map.on('sourcedata', (event) => {
+    if (event.sourceId !== BUILDING_TILE_SOURCE || !event.isSourceLoaded) return;
+    state.buildingTilesFailed = false;
+    scheduleBuildingTileSync();
+  });
+  map.on('moveend', () => scheduleBuildingTileSync());
+  map.on('idle', () => scheduleBuildingTileSync());
   map.on('error', (event) => {
+    if (event?.sourceId === BUILDING_TILE_SOURCE) {
+      handleBuildingTileError(event.error);
+      return;
+    }
     if (event?.error?.message?.includes('Failed to fetch')) return;
     console.warn('Map error', event.error);
   });
@@ -126,8 +140,20 @@ function initialiseMap() {
 
 function installMapLayers() {
   const { map } = state;
+  map.addSource(BUILDING_TILE_SOURCE, { type: 'vector', url: BUILDING_TILE_URL });
   map.addSource('building-footprints', { type: 'geojson', data: emptyFeatureCollection() });
   map.addSource('building-shadows', { type: 'geojson', data: emptyFeatureCollection() });
+
+  // This transparent layer tells MapLibre to stream just the visible building
+  // tiles. Their geometry is then reused for local shadow projection.
+  map.addLayer({
+    id: 'building-tile-loader',
+    type: 'fill',
+    source: BUILDING_TILE_SOURCE,
+    'source-layer': BUILDING_TILE_LAYER,
+    minzoom: 13,
+    paint: { 'fill-opacity': 0 }
+  });
 
   map.addLayer({
     id: 'building-shadows',
@@ -211,7 +237,7 @@ function wireControls() {
     if (!state.map) return;
     flyToAndLoad({ center: [lng, lat], zoom, pitch: state.is3d ? pitch : 0, bearing: -18, duration: 1150, essential: true });
   });
-  elements['load-buildings'].addEventListener('click', () => refreshScene({ retryBuildings: true }));
+  elements['load-buildings'].addEventListener('click', () => refreshVisibleBuildingTiles({ showProgress: true, reload: true }));
   elements['close-inspector'].addEventListener('click', () => { elements['inspector'].hidden = true; });
   elements['locate-button'].addEventListener('click', locateUser);
   elements['about-button'].addEventListener('click', () => elements['about-dialog'].showModal());
@@ -232,8 +258,8 @@ function flyToAndLoad(target) {
   const requestId = ++state.mapMoveRequestId;
   window.clearTimeout(state.refreshDebounce);
   setBuildingButtonLoading(true);
-  setBuildingLoadStatus('Loading visible area…', 'Fetching building footprints…');
-  setMapLoading(true, 'Loading visible area…', 'Fetching building data…');
+  setBuildingLoadStatus('Loading visible area…', 'Loading compact building tiles…');
+  setMapLoading(true, 'Loading visible area…', 'Loading building tiles…');
 
   const [targetLng, targetLat] = target.center;
   const currentCenter = map.getCenter();
@@ -295,8 +321,9 @@ function scheduleLiveRefresh() {
 }
 
 function scheduleSceneRefresh() {
+  scheduleLocalShadowPreview();
   window.clearTimeout(state.refreshDebounce);
-  state.refreshDebounce = window.setTimeout(() => refreshScene({ quiet: true }), 120);
+  state.refreshDebounce = window.setTimeout(() => refreshConditions(), CONDITIONS_DEBOUNCE_MS);
 }
 
 function visibleBoundsKey() {
@@ -307,141 +334,149 @@ function visibleBoundsKey() {
     .join(',');
 }
 
-function clearBuildingRetry() {
-  window.clearTimeout(state.buildingRetryTimer);
-  state.buildingRetryTimer = null;
-  state.buildingRetryBounds = null;
-  state.buildingRetryCount = 0;
-}
-
-function scheduleBuildingRetry(boundsKey) {
-  if (state.buildingRetryBounds !== boundsKey) {
-    clearBuildingRetry();
-    state.buildingRetryBounds = boundsKey;
-  }
-  if (state.buildingRetryCount >= MAX_BUILDING_RETRIES) return false;
-
-  state.buildingRetryCount += 1;
-  window.clearTimeout(state.buildingRetryTimer);
-  state.buildingRetryTimer = window.setTimeout(() => {
-    state.buildingRetryTimer = null;
-    if (visibleBoundsKey() !== boundsKey) {
-      clearBuildingRetry();
-      return;
-    }
-    refreshScene({ quiet: true, showProgress: true, retryBuildings: true, fromAutoRetry: true });
-  }, BUILDING_RETRY_DELAY_MS);
-  return true;
-}
-
-async function refreshScene({
-  quiet = false,
-  syncDateInput = false,
-  showProgress = !quiet,
-  retryBuildings = false,
-  fromAutoRetry = false
-} = {}) {
+function refreshScene({ quiet = false, syncDateInput = false, showProgress = !quiet } = {}) {
   if (syncDateInput) syncInputsFromDate();
-  if (!fromAutoRetry) clearBuildingRetry();
+  scheduleLocalShadowPreview();
   refreshConditions();
-  if (!state.map?.isStyleLoaded() || !state.map.getSource('building-footprints')) return;
+  refreshVisibleBuildingTiles({ showProgress });
+}
 
-  const requestId = ++state.sceneRequestId;
-  state.abortController?.abort();
-  state.abortController = new AbortController();
-  const boundsKey = visibleBoundsKey();
-  if (!boundsKey) return;
-  const includeBuildings = retryBuildings
-    || state.buildingsBoundsKey !== boundsKey
-    || !state.hasLiveBuildingData;
+function scheduleLocalShadowPreview() {
+  window.cancelAnimationFrame(state.shadowPreviewFrame);
+  state.shadowPreviewFrame = window.requestAnimationFrame(() => {
+    state.solar = localSolarPosition(state.date);
+    updateSunPanel();
+    updateHeaderStatus();
+    updateClientShadows();
+  });
+}
+
+function refreshVisibleBuildingTiles({ showProgress = false, reload = false } = {}) {
+  const { map } = state;
+  if (!map?.isStyleLoaded() || !map.getSource(BUILDING_TILE_SOURCE)) return;
   if (showProgress) {
     setBuildingButtonLoading(true);
-    setBuildingLoadStatus(
-      'Loading visible area…',
-      'Fetching building footprints…'
-    );
-    setMapLoading(true, 'Loading visible area…', 'Fetching building data…');
+    setBuildingLoadStatus('Loading visible area…', 'Loading compact building tiles…');
+    setMapLoading(true, 'Loading visible area…', 'Loading building tiles…');
   }
-  const parameters = new URLSearchParams({
-    bbox: boundsKey,
-    at: state.date.toISOString(),
-    live: String(state.live),
-    retry_buildings: String(retryBuildings),
-    include_buildings: String(includeBuildings)
-  });
+  if (reload) map.getSource(BUILDING_TILE_SOURCE).reload?.();
+  scheduleBuildingTileSync({ showProgress, force: reload });
+}
+
+function scheduleBuildingTileSync({ showProgress = false, force = false } = {}) {
+  window.clearTimeout(state.buildingTileSyncTimer);
+  state.buildingTileSyncTimer = window.setTimeout(() => {
+    syncBuildingTiles({ showProgress, force });
+  }, 40);
+}
+
+function syncBuildingTiles({ showProgress = false, force = false } = {}) {
+  const { map } = state;
+  if (!map?.isStyleLoaded() || !map.getSource(BUILDING_TILE_SOURCE)) return;
+  if (map.getZoom() < 13) {
+    const boundsKey = visibleBoundsKey();
+    if (boundsKey && (state.buildingsBoundsKey !== boundsKey || state.buildingTileFingerprint !== 'zoomed-out')) {
+      state.buildings = emptyFeatureCollection();
+      state.shadows = emptyFeatureCollection();
+      state.buildingsBoundsKey = boundsKey;
+      state.buildingTileFingerprint = 'zoomed-out';
+      state.buildingsDirty = true;
+      state.shadowsDirty = true;
+      applyMapData();
+    }
+    setBuildingLoadStatus('Zoom in to show buildings', 'Building tiles appear from map zoom 13.');
+    setBuildingButtonLoading(false);
+    setMapLoading(false);
+    return;
+  }
+  if (!map.isSourceLoaded(BUILDING_TILE_SOURCE)) return;
+  const boundsKey = visibleBoundsKey();
+  if (!boundsKey) return;
 
   try {
-    const response = await fetch(`/api/scene?${parameters}`, { signal: state.abortController.signal });
-    const scene = await response.json();
-    if (!response.ok) throw new Error(scene.detail || `The API returned ${response.status}`);
-    if (requestId !== state.sceneRequestId) return;
-    applyScene(scene, { boundsKey, includeBuildings });
-    if (scene.meta.source === 'fallback') {
-      const retryScheduled = scheduleBuildingRetry(boundsKey);
-      if (!quiet) {
-        showToast(retryScheduled
-          ? 'Building data is taking a moment. Trying again…'
-          : 'Building data is unavailable right now. Try refresh again shortly.');
-      }
-    } else {
-      clearBuildingRetry();
-      if (!quiet) showToast(`Loaded ${scene.meta.building_count.toLocaleString()} buildings for the visible map. Shadows updated.`);
-    }
+    const rawFeatures = map.querySourceFeatures(BUILDING_TILE_SOURCE, { sourceLayer: BUILDING_TILE_LAYER });
+    const features = tileBuildingsForVisibleMap(rawFeatures);
+    const fingerprint = buildingTileFingerprint(features);
+    if (!force && state.buildingsBoundsKey === boundsKey && state.buildingTileFingerprint === fingerprint) return;
+
+    state.buildings = { type: 'FeatureCollection', features };
+    state.buildingsBoundsKey = boundsKey;
+    state.buildingTileFingerprint = fingerprint;
+    state.buildingTilesFailed = false;
+    state.buildingsDirty = true;
+    updateClientShadows();
+    setBuildingLoadStatus(
+      features.length ? `${features.length.toLocaleString()} buildings ready` : 'No buildings in this view',
+      'Building tiles · visible map'
+    );
+    setBuildingButtonLoading(false);
+    setMapLoading(false);
+  } catch (error) {
+    console.warn('Could not read building tiles', error);
+    handleBuildingTileError(error);
+  }
+}
+
+function handleBuildingTileError(error) {
+  if (state.buildingTilesFailed) return;
+  state.buildingTilesFailed = true;
+  console.warn('Building tiles failed. Falling back to the Python API.', error);
+  loadBuildingFallback();
+}
+
+async function loadBuildingFallback() {
+  const boundsKey = visibleBoundsKey();
+  if (!boundsKey) return;
+  const requestId = ++state.buildingFallbackRequestId;
+  state.buildingFallbackAbortController?.abort();
+  state.buildingFallbackAbortController = new AbortController();
+  setBuildingButtonLoading(true);
+  setBuildingLoadStatus('Loading visible area…', 'Using the Helsinki building fallback…');
+  setMapLoading(true, 'Loading visible area…', 'Loading building fallback…');
+
+  try {
+    const parameters = new URLSearchParams({ bbox: boundsKey, retry_buildings: 'true' });
+    const response = await fetch(`/api/buildings?${parameters}`, { signal: state.buildingFallbackAbortController.signal });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || `The API returned ${response.status}`);
+    if (requestId !== state.buildingFallbackRequestId || visibleBoundsKey() !== boundsKey) return;
+    state.buildings = payload.buildings || emptyFeatureCollection();
+    state.buildingsBoundsKey = boundsKey;
+    state.buildingTileFingerprint = null;
+    state.buildingsDirty = true;
+    updateClientShadows();
+    const count = Number(payload.meta?.building_count) || 0;
+    const source = payload.meta?.source === 'fallback' ? 'Starter map fallback' : 'Helsinki building service fallback';
+    setBuildingLoadStatus(
+      count ? `${count.toLocaleString()} buildings ready` : 'No buildings in this view',
+      source
+    );
   } catch (error) {
     if (error.name === 'AbortError') return;
-    if (requestId !== state.sceneRequestId) return;
-    console.warn('Scene request failed', error);
-    setBuildingLoadStatus('Couldn’t load visible area', 'Refresh to try again.');
-    if (!quiet) showToast(error.message || 'Could not calculate this scene.');
+    if (requestId !== state.buildingFallbackRequestId) return;
+    console.warn('Building fallback failed', error);
+    setBuildingLoadStatus('Couldn’t load visible area', 'Try refresh again shortly.');
+    showToast(error.message || 'Could not load building data.');
   } finally {
-    if (requestId === state.sceneRequestId) {
+    if (requestId === state.buildingFallbackRequestId) {
       setBuildingButtonLoading(false);
       setMapLoading(false);
     }
   }
 }
 
-function applyScene(scene, { boundsKey, includeBuildings }) {
-  applyConditions(scene, { render: false });
-  const hasLiveBuildingData = scene.meta.source === 'openstreetmap';
-  const buildingsIncluded = scene.meta.buildings_included ?? includeBuildings;
-  if (buildingsIncluded || !hasLiveBuildingData) {
-    state.buildings = hasLiveBuildingData ? scene.buildings || emptyFeatureCollection() : emptyFeatureCollection();
-    state.buildingsBoundsKey = hasLiveBuildingData ? boundsKey : null;
-    state.hasLiveBuildingData = hasLiveBuildingData;
-    state.buildingsDirty = true;
-  }
-  state.shadows = hasLiveBuildingData ? scene.shadows || emptyFeatureCollection() : emptyFeatureCollection();
-  state.shadowsDirty = true;
-  applyMapData();
-
-  const count = scene.meta.building_count;
-  if (hasLiveBuildingData) {
-    setBuildingLoadStatus(
-      count ? `${count.toLocaleString()} buildings ready` : 'No buildings in this view',
-      buildingsIncluded
-        ? scene.meta.cached ? 'OpenStreetMap cache · visible area' : 'OpenStreetMap · visible area'
-        : 'Cached building geometry · shadows updated'
-    );
-  } else {
-    setBuildingLoadStatus(
-      'Building data is taking a moment…',
-      'Trying OpenStreetMap again…'
-    );
-  }
-}
-
 async function refreshConditions() {
   const requestId = ++state.conditionsRequestId;
+  const requestedAt = state.date.toISOString();
   state.conditionsAbortController?.abort();
   state.conditionsAbortController = new AbortController();
-  const parameters = new URLSearchParams({ at: state.date.toISOString(), live: String(state.live) });
+  const parameters = new URLSearchParams({ at: requestedAt, live: String(state.live) });
 
   try {
     const response = await fetch(`/api/conditions?${parameters}`, { signal: state.conditionsAbortController.signal });
     const conditions = await response.json();
     if (!response.ok) throw new Error(conditions.detail || `The API returned ${response.status}`);
-    if (requestId !== state.conditionsRequestId) return;
+    if (requestId !== state.conditionsRequestId || requestedAt !== state.date.toISOString()) return;
     applyConditions(conditions);
   } catch (error) {
     if (error.name === 'AbortError' || requestId !== state.conditionsRequestId) return;
@@ -449,6 +484,7 @@ async function refreshConditions() {
     state.weather = state.live ? unavailableWeather() : clearSkyPotentialWeather();
     updateWeatherPanel();
     updateHeaderStatus();
+    applyMapData();
   }
 }
 
@@ -459,7 +495,7 @@ function applyConditions(conditions, { render = true } = {}) {
   updateSunPanel();
   updateWeatherPanel();
   updateHeaderStatus();
-  if (render) applyMapData();
+  if (render) updateClientShadows();
 }
 
 function applyMapData() {
@@ -722,7 +758,7 @@ function setBuildingButtonLoading(isLoading) {
   button.disabled = isLoading;
   button.innerHTML = isLoading
     ? '<span class="loader"></span> Loading this map area…'
-    : 'Load buildings here';
+    : 'Refresh buildings';
 }
 
 function inspectBuilding(event) {
@@ -824,6 +860,209 @@ function readableDate(parts) {
   return new Intl.DateTimeFormat('en-GB', { timeZone: HELSINKI.timeZone, day: 'numeric', month: 'short' }).format(state.date);
 }
 
+function tileBuildingsForVisibleMap(rawFeatures) {
+  const bounds = shadowAwareVisibleBounds();
+  const seen = new Set();
+  const features = [];
+  for (const rawFeature of rawFeatures) {
+    const polygons = tileFeaturePolygons(rawFeature.geometry);
+    const properties = rawFeature.properties || {};
+    polygons.forEach((polygon, polygonIndex) => {
+      const ring = normaliseRing(polygon[0]);
+      if (!ring || !ringOverlapsBounds(ring, bounds)) return;
+      const id = tileBuildingId(rawFeature, ring, polygonIndex);
+      if (seen.has(id)) return;
+      seen.add(id);
+      features.push({
+        type: 'Feature',
+        properties: {
+          id,
+          name: properties.name || 'Helsinki building',
+          height: normaliseHeight(properties.render_height),
+          source: 'vector tile'
+        },
+        geometry: { type: 'Polygon', coordinates: [ring] }
+      });
+    });
+  }
+  return features;
+}
+
+function tileFeaturePolygons(geometry) {
+  if (!geometry || !Array.isArray(geometry.coordinates)) return [];
+  if (geometry.type === 'Polygon') return [geometry.coordinates];
+  if (geometry.type === 'MultiPolygon') return geometry.coordinates;
+  return [];
+}
+
+function normaliseRing(rawRing) {
+  if (!Array.isArray(rawRing) || rawRing.length < 3) return null;
+  const ring = rawRing
+    .filter((point) => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1]))
+    .map(([longitude, latitude]) => [longitude, latitude]);
+  if (ring.length < 3) return null;
+  const lastPoint = ring[ring.length - 1];
+  if (ring[0][0] !== lastPoint[0] || ring[0][1] !== lastPoint[1]) ring.push([...ring[0]]);
+  return ring;
+}
+
+function tileBuildingId(feature, ring, polygonIndex) {
+  const sourceId = feature.id === undefined || feature.id === null ? 'shape' : String(feature.id);
+  const shape = ring.map(([longitude, latitude]) => `${longitude.toFixed(6)},${latitude.toFixed(6)}`).join('|');
+  return `${sourceId}:${polygonIndex}:${shape}`;
+}
+
+function buildingTileFingerprint(features) {
+  return features.map((feature) => feature.properties.id).sort().join(',');
+}
+
+function shadowAwareVisibleBounds() {
+  const bounds = state.map.getBounds();
+  const latitude = state.map.getCenter().lat;
+  const latitudePadding = MAX_SHADOW_METERS / METERS_PER_DEGREE_LAT;
+  const longitudePadding = latitudePadding / Math.max(0.2, Math.cos(toRadians(latitude)));
+  return {
+    south: bounds.getSouth() - latitudePadding,
+    west: bounds.getWest() - longitudePadding,
+    north: bounds.getNorth() + latitudePadding,
+    east: bounds.getEast() + longitudePadding
+  };
+}
+
+function ringOverlapsBounds(ring, bounds) {
+  const longitudes = ring.map(([longitude]) => longitude);
+  const latitudes = ring.map(([, latitude]) => latitude);
+  return !(
+    Math.max(...longitudes) < bounds.west
+    || Math.min(...longitudes) > bounds.east
+    || Math.max(...latitudes) < bounds.south
+    || Math.min(...latitudes) > bounds.north
+  );
+}
+
+function updateClientShadows() {
+  state.shadows = {
+    type: 'FeatureCollection',
+    features: createClientShadows(state.buildings.features, state.solar)
+  };
+  state.shadowsDirty = true;
+  applyMapData();
+}
+
+function createClientShadows(buildings, sun) {
+  if (!sun || sun.altitude <= 0 || sun.altitude > 88) return [];
+  return buildings.map((building) => createClientShadow(building, sun)).filter(Boolean);
+}
+
+function createClientShadow(building, sun) {
+  const ring = building.geometry?.coordinates?.[0];
+  if (!Array.isArray(ring) || ring.length < 4) return null;
+  const footprint = ring.slice(0, -1);
+  if (footprint.length < 3) return null;
+  const height = normaliseHeight(building.properties?.height);
+  const distance = Math.min(MAX_SHADOW_METERS, height / Math.tan(toRadians(sun.altitude)));
+  const bearing = (sun.azimuth + 180) % 360;
+  const projected = footprint.map((point) => shiftCoordinate(point, distance, bearing));
+  const hull = convexHull([...footprint, ...projected]);
+  if (hull.length < 3) return null;
+  return {
+    type: 'Feature',
+    properties: {
+      building: building.properties?.name || 'Building',
+      height,
+      length: Math.round(distance)
+    },
+    geometry: { type: 'Polygon', coordinates: [[...hull, hull[0]]] }
+  };
+}
+
+function shiftCoordinate(point, distance, bearing) {
+  const [longitude, latitude] = point;
+  const radians = toRadians(bearing);
+  const north = Math.cos(radians) * distance;
+  const east = Math.sin(radians) * distance;
+  return [
+    longitude + east / (METERS_PER_DEGREE_LAT * Math.cos(toRadians(latitude))),
+    latitude + north / METERS_PER_DEGREE_LAT
+  ];
+}
+
+function convexHull(points) {
+  const sorted = [...points].sort(([leftLongitude, leftLatitude], [rightLongitude, rightLatitude]) => (
+    leftLongitude - rightLongitude || leftLatitude - rightLatitude
+  ));
+  if (sorted.length <= 1) return sorted;
+  const cross = (origin, pointA, pointB) => (
+    (pointA[0] - origin[0]) * (pointB[1] - origin[1])
+    - (pointA[1] - origin[1]) * (pointB[0] - origin[0])
+  );
+  const lower = [];
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
+    lower.push(point);
+  }
+  const upper = [];
+  for (const point of [...sorted].reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
+    upper.push(point);
+  }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
+function localSolarPosition(date) {
+  const local = getZonedParts(date, HELSINKI.timeZone);
+  const dayOfYear = dayOfYearFor(local.year, local.month, local.day);
+  const daysInYear = isLeapYear(local.year) ? 366 : 365;
+  const hour = local.hour + local.minute / 60 + local.second / 3_600;
+  const gamma = 2 * Math.PI / daysInYear * (dayOfYear - 1 + (hour - 12) / 24);
+  const equationOfTime = 229.18 * (
+    0.000075
+    + 0.001868 * Math.cos(gamma)
+    - 0.032077 * Math.sin(gamma)
+    - 0.014615 * Math.cos(2 * gamma)
+    - 0.040849 * Math.sin(2 * gamma)
+  );
+  const declination = (
+    0.006918
+    - 0.399912 * Math.cos(gamma)
+    + 0.070257 * Math.sin(gamma)
+    - 0.006758 * Math.cos(2 * gamma)
+    + 0.000907 * Math.sin(2 * gamma)
+    - 0.002697 * Math.cos(3 * gamma)
+    + 0.00148 * Math.sin(3 * gamma)
+  );
+  const utcOffsetMinutes = getTimeZoneOffset(date, HELSINKI.timeZone);
+  const trueSolarTime = (hour * 60 + equationOfTime + 4 * HELSINKI.lng - utcOffsetMinutes + 1_440) % 1_440;
+  const hourAngle = toRadians(trueSolarTime / 4 - 180);
+  const latitude = toRadians(HELSINKI.lat);
+  const cosineZenith = Math.max(-1, Math.min(1,
+    Math.sin(latitude) * Math.sin(declination)
+    + Math.cos(latitude) * Math.cos(declination) * Math.cos(hourAngle)
+  ));
+  const altitude = 90 - toDegrees(Math.acos(cosineZenith));
+  const azimuth = (toDegrees(Math.atan2(
+    Math.sin(hourAngle),
+    Math.cos(hourAngle) * Math.sin(latitude) - Math.tan(declination) * Math.cos(latitude)
+  )) + 180) % 360;
+  return {
+    altitude: roundSolar(altitude),
+    azimuth: roundSolar(azimuth),
+    declination: roundSolar(toDegrees(declination))
+  };
+}
+
+function dayOfYearFor(year, month, day) {
+  return Math.floor((Date.UTC(year, month - 1, day) - Date.UTC(year, 0, 1)) / 86_400_000) + 1;
+}
+
+function isLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function roundSolar(value) {
+  return Math.round(value * 100_000) / 100_000;
+}
+
 function normaliseHeight(value) {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_BUILDING_HEIGHT;
@@ -835,6 +1074,7 @@ function bearingToCompass(bearing) {
 
 function emptyFeatureCollection() { return { type: 'FeatureCollection', features: [] }; }
 function toRadians(value) { return value * Math.PI / 180; }
+function toDegrees(value) { return value * 180 / Math.PI; }
 function pad(value) { return String(value).padStart(2, '0'); }
 function formatDegrees(value) { return value >= 0 ? Math.round(value) : `−${Math.abs(Math.round(value))}`; }
 

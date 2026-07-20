@@ -7,8 +7,9 @@ minutes without visitors.
 
 An interactive 2D / 3D map for finding sunlight in Helsinki.
 
-The frontend is a small MapLibre browser app. The Python/FastAPI backend owns
-the solar calculation, building-footprint lookup and shadow projection.
+The frontend is a small MapLibre browser app. Python handles the solar
+calculation, sky estimate, and Bayesian nowcast. The browser streams visible
+building tiles and projects their shadows locally.
 
 ## Run it
 
@@ -30,11 +31,14 @@ Open [http://localhost:4173](http://localhost:4173).
 
 - The time control uses the `Europe/Helsinki` time zone, including daylight
   saving transitions.
-- `GET /api/scene` accepts a Helsinki map bounding box and time. It returns the
-  solar position, sunrise/sunset, building features, and Python-projected
-  shadow polygons in one response.
-- `GET /api/conditions` returns the quicker sun, current-sky, and direct-sun
-  nowcast data without waiting for building footprints.
+- `GET /api/conditions` returns the sun position, current-sky estimate, and
+  direct-sun nowcast. It stays small while the time slider moves.
+- The browser loads prebuilt building vector tiles for the visible map and
+  turns the cached footprints into shadow polygons immediately. It does not
+  wait for a new server shadow response on every slider move.
+- `GET /api/buildings` is a Python fallback. It reads Helsinki's official WFS
+  building layer if the browser tile source is unavailable.
+- `GET /api/scene` remains available for a complete server-side scene response.
 - The backend calculates sun direction in the `Europe/Helsinki` time zone,
   including daylight-saving transitions.
 - In live mode, the backend also retrieves Helsinki cloud cover and fades or
@@ -42,9 +46,10 @@ Open [http://localhost:4173](http://localhost:4173).
   the chance of direct sun over the next hour. These are weather-model
   estimates, not a local sky observation. For any manually selected time, the
   map deliberately shows **clear-sky potential**.
-- Building footprints are fetched server-side from OpenStreetMap’s public
-  Overpass API and cached in memory for 12 hours. A small fallback set is used
-  if that public service is unavailable.
+- The normal building path uses compact OpenFreeMap/OpenMapTiles building tiles
+  from Helsinki's map tile service. MapLibre keeps nearby tiles in its browser
+  cache as you pan. The Python fallback uses Helsinki's official WFS building
+  layer and keeps a viewport response in memory for 12 hours.
 - Shadows are projected from building height and sun altitude. They are useful
   for planning, not survey work.
 

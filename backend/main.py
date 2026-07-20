@@ -1,8 +1,8 @@
 """FastAPI service for Helsinki building shadows.
 
-The browser is responsible for interaction and WebGL rendering.  This module
-owns the data and solar geometry: it fetches/caches building footprints,
-calculates Helsinki's sun position, and returns ready-to-render shadow shapes.
+The browser handles interaction, visible building tiles, and fast local shadow
+previews. This module owns solar geometry, weather, the direct-sun nowcast,
+and a City of Helsinki building fallback for API callers.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import re
 import threading
 import time
 from dataclasses import dataclass
@@ -39,17 +38,15 @@ METERS_PER_DEGREE_LAT = 111_320
 DEFAULT_BUILDING_HEIGHT = 15.0
 MAX_SHADOW_METERS = 560.0
 MAX_BUILDINGS_PER_REQUEST = 3_000
-OVERPASS_ENDPOINTS = (
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-)
+HELSINKI_WFS_ENDPOINT = "https://kartta.hel.fi/ws/geoserver/avoindata/wfs"
+HELSINKI_WFS_BUILDINGS_LAYER = "avoindata:Rakennukset_alue_rekisteritiedot"
 OPEN_METEO_ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 WEATHER_CACHE_SECONDS = 5 * 60
-OVERPASS_HTTP_TIMEOUT_SECONDS = 10
+HELSINKI_WFS_HTTP_TIMEOUT_SECONDS = 12
 FAILED_BUILDING_CACHE_SECONDS = 15
 
-# This bounds check keeps the public Overpass request firmly scoped to the
-# product's Helsinki use case. It is intentionally broader than city centre.
+# This bounds check keeps the City of Helsinki building query firmly scoped to
+# the product's Helsinki use case. It is intentionally broader than city centre.
 HELSINKI_REGION = (59.95, 24.60, 60.38, 25.40)  # south, west, north, east
 MAX_QUERY_LATITUDE_SPAN = 0.09
 MAX_QUERY_LONGITUDE_SPAN = 0.14
@@ -106,7 +103,7 @@ FALLBACK_FEATURES = [
 
 
 class BuildingStore:
-    """A deliberately small, in-memory cache around OpenStreetMap Overpass."""
+    """A small in-memory cache around Helsinki's official building WFS."""
 
     def __init__(self) -> None:
         self._cache: dict[str, BuildingCacheEntry] = {}
@@ -127,20 +124,20 @@ class BuildingStore:
                     in_flight = threading.Event()
                     self._inflight[cache_key] = in_flight
                     break
-            # A time scrub can make several identical requests before Overpass
-            # responds. Let them share the same fetch instead of piling up.
+            # Several requests for the same visible area can arrive together.
+            # Let them share one WFS request instead of piling up.
             in_flight.wait()
 
         try:
             try:
-                features = fetch_openstreetmap_buildings(bounds)
+                features = fetch_helsinki_buildings(bounds)
                 if len(features) < 4:
-                    raise ValueError("OpenStreetMap returned too few building footprints")
-                source = "openstreetmap"
+                    raise ValueError("Helsinki WFS returned too few building footprints")
+                source = "helsinki-wfs"
                 ttl_seconds = 12 * 60 * 60
             except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
-                # The map remains useful when a public API is rate-limited or offline.
-                print(f"OpenStreetMap building fetch failed: {error}")
+                # The map remains useful when the public building service is unavailable.
+                print(f"Helsinki WFS building fetch failed: {error}")
                 features = fallback_features_in(bounds)
                 source = "fallback"
                 ttl_seconds = FAILED_BUILDING_CACHE_SECONDS
@@ -228,35 +225,37 @@ def parse_timestamp(raw_timestamp: str | None) -> datetime:
     return timestamp.astimezone(UTC)
 
 
-def fetch_openstreetmap_buildings(bounds: Bounds) -> list[dict[str, Any]]:
-    query = (
-        "[out:json][timeout:8];"
-        f'way["building"]({bounds.south:.5f},{bounds.west:.5f},{bounds.north:.5f},{bounds.east:.5f});'
-        "out tags geom;"
+def fetch_helsinki_buildings(bounds: Bounds) -> list[dict[str, Any]]:
+    """Fetch one viewport from Helsinki's maintained building register.
+
+    The browser normally uses prebuilt vector tiles. This endpoint keeps the
+    Python API useful as a compact fallback without relying on Overpass.
+    """
+    query = urlencode(
+        {
+            "service": "WFS",
+            "version": "2.0.0",
+            "request": "GetFeature",
+            "typeNames": HELSINKI_WFS_BUILDINGS_LAYER,
+            "outputFormat": "application/json",
+            "srsName": "EPSG:4326",
+            "bbox": (
+                f"{bounds.west:.5f},{bounds.south:.5f},"
+                f"{bounds.east:.5f},{bounds.north:.5f},EPSG:4326"
+            ),
+            "count": str(MAX_BUILDINGS_PER_REQUEST),
+        }
     )
-    body = urlencode({"data": query}).encode("utf-8")
-    last_error: Exception | None = None
-    for endpoint in OVERPASS_ENDPOINTS:
-        request = Request(
-            endpoint,
-            data=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "SunfinderHelsinki/1.0 (local map prototype)",
-            },
-            method="POST",
-        )
-        try:
-            with urlopen(request, timeout=OVERPASS_HTTP_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed public OSM endpoint
-                payload = json.loads(response.read().decode("utf-8"))
-            return overpass_to_features(payload)
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as error:
-            last_error = error
-            print(f"Overpass endpoint unavailable ({endpoint}): {error}")
-    if last_error:
-        raise last_error
-    raise RuntimeError("No Overpass endpoints are configured")
+    request = Request(
+        f"{HELSINKI_WFS_ENDPOINT}?{query}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "SunfinderHelsinki/1.0 (building map)",
+        },
+    )
+    with urlopen(request, timeout=HELSINKI_WFS_HTTP_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed City of Helsinki endpoint
+        payload = json.loads(response.read().decode("utf-8"))
+    return wfs_to_features(payload)
 
 
 def fetch_current_weather() -> dict[str, Any]:
@@ -423,52 +422,81 @@ def weather_label(weather_code: int) -> str:
     return "Poor sky conditions"
 
 
-def overpass_to_features(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def wfs_to_features(payload: dict[str, Any]) -> list[dict[str, Any]]:
     features: list[dict[str, Any]] = []
-    for element in payload.get("elements", []):
-        if element.get("type") != "way" or not isinstance(element.get("geometry"), list):
+    raw_features = payload.get("features", [])
+    if not isinstance(raw_features, list):
+        return features
+    for item in raw_features:
+        if not isinstance(item, dict):
             continue
-        ring = [[node.get("lon"), node.get("lat")] for node in element["geometry"]]
-        if len(ring) < 3 or any(not all(isinstance(value, (int, float)) for value in point) for point in ring):
+        geometry = item.get("geometry")
+        if not isinstance(geometry, dict):
             continue
-        if ring[0] != ring[-1]:
-            ring.append(ring[0].copy())
-        tags = element.get("tags") or {}
-        features.append(
-            {
-                "type": "Feature",
-                "properties": {
-                    "id": element.get("id"),
-                    "name": tags.get("name") or tags.get("addr:street") or "Helsinki building",
-                    "height": height_from_tags(tags),
-                    "source": "OpenStreetMap",
-                },
-                "geometry": {"type": "Polygon", "coordinates": [ring]},
-            }
-        )
-        if len(features) >= MAX_BUILDINGS_PER_REQUEST:
-            break
+        polygons = geometry.get("coordinates")
+        if geometry.get("type") == "Polygon":
+            polygons = [polygons]
+        if geometry.get("type") not in {"Polygon", "MultiPolygon"} or not isinstance(polygons, list):
+            continue
+
+        properties = item.get("properties")
+        if not isinstance(properties, dict):
+            properties = {}
+        for polygon_index, polygon in enumerate(polygons):
+            if not isinstance(polygon, list) or not polygon:
+                continue
+            ring = polygon[0]
+            if not isinstance(ring, list) or len(ring) < 3:
+                continue
+            normalised_ring = [[point[0], point[1]] for point in ring if isinstance(point, list) and len(point) >= 2]
+            if len(normalised_ring) < 3 or any(
+                not all(isinstance(value, (int, float)) for value in point) for point in normalised_ring
+            ):
+                continue
+            if normalised_ring[0] != normalised_ring[-1]:
+                normalised_ring.append(normalised_ring[0].copy())
+            item_id = item.get("id") or properties.get("id")
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "id": f"{item_id}:{polygon_index}",
+                        "name": wfs_building_name(properties),
+                        "height": height_from_wfs_properties(properties),
+                        "source": "City of Helsinki building register",
+                    },
+                    "geometry": {"type": "Polygon", "coordinates": [normalised_ring]},
+                }
+            )
+            if len(features) >= MAX_BUILDINGS_PER_REQUEST:
+                return features
     return features
 
 
-def height_from_tags(tags: dict[str, str]) -> float:
-    value = str(tags.get("height", "")).replace(",", ".")
-    match = re.search(r"-?\d+(?:\.\d+)?", value)
-    if match:
-        height = float(match.group())
-        if 2 < height < 400:
-            return height
+def height_from_wfs_properties(properties: dict[str, Any]) -> float:
     try:
-        levels = float(tags.get("building:levels", ""))
+        levels = float(properties.get("i_kerrlkm", ""))
     except (TypeError, ValueError):
         levels = 0
     if levels > 0:
         return max(4.0, min(140.0, levels * 3.25 + 1.5))
-    if tags.get("building") in {"church", "cathedral"}:
+    building_type = str(properties.get("tyyppi", "")).lower()
+    if "kirkko" in building_type:
         return 28.0
-    if tags.get("building") == "commercial":
+    if "liike" in building_type:
         return 20.0
     return DEFAULT_BUILDING_HEIGHT
+
+
+def wfs_building_name(properties: dict[str, Any]) -> str:
+    street = str(properties.get("katunimi_suomi") or "").strip()
+    number = str(properties.get("osoitenumero") or "").strip()
+    if street and number:
+        return f"{street} {number}"
+    if street:
+        return street
+    building_type = str(properties.get("tyyppi") or "").strip()
+    return building_type or "Helsinki building"
 
 
 def fallback_features_in(bounds: Bounds) -> list[dict[str, Any]]:
@@ -649,7 +677,7 @@ def feature_collection(features: list[dict[str, Any]]) -> dict[str, Any]:
 app = FastAPI(
     title="Sunfinder Helsinki API",
     version="1.0.0",
-    description="Server-side solar and building-shadow calculations for Helsinki.",
+    description="Solar, sky, and building fallback API for Helsinki.",
 )
 app.add_middleware(GZipMiddleware, minimum_size=1_000)
 
@@ -696,6 +724,28 @@ async def conditions(
 ) -> dict[str, Any]:
     """Return current sky state without waiting for building footprints."""
     return await current_conditions(parse_timestamp(at), live)
+
+
+@app.get("/api/buildings")
+async def buildings(
+    bbox: str = Query(description="south,west,north,east"),
+    retry_buildings: bool = Query(default=False, description="Bypass a cached fallback building response"),
+) -> dict[str, Any]:
+    """Return a Helsinki WFS building fallback for one map viewport."""
+    bounds = parse_bounds(bbox)
+    features, source, from_cache = await asyncio.to_thread(
+        building_store.get,
+        bounds,
+        retry_failed=retry_buildings,
+    )
+    return {
+        "buildings": feature_collection(features),
+        "meta": {
+            "building_count": len(features),
+            "source": source,
+            "cached": from_cache,
+        },
+    }
 
 
 @app.get("/api/scene")

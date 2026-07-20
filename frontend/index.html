@@ -10,6 +10,7 @@
     <title>Sunfinder: Helsinki sunlight map</title>
     <link rel="preconnect" href="https://unpkg.com" />
     <link rel="preconnect" href="https://tile.openstreetmap.org" />
+    <link rel="preconnect" href="https://maptiles.api.hel.fi" />
     <link
       rel="stylesheet"
       href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
@@ -152,8 +153,8 @@
             <option value="60.1609,24.9419,16.1,57">Kaivopuisto</option>
           </select>
           <p class="building-status" id="building-status">Loading visible map…</p>
-          <button id="load-buildings" class="load-button" type="button" title="Load buildings for the part of the map you can see" aria-label="Load buildings for the part of the map you can see">Load buildings here</button>
-          <p class="data-note" id="data-note">OpenStreetMap data for the visible area.</p>
+          <button id="load-buildings" class="load-button" type="button" title="Refresh the building tiles for the part of the map you can see" aria-label="Refresh the building tiles for the part of the map you can see">Refresh buildings</button>
+          <p class="data-note" id="data-note">Building tiles follow the visible map.</p>
         </section>
 
         <section class="inspector panel" id="inspector" aria-live="polite" hidden>
@@ -171,11 +172,11 @@
           <span class="map-loading-spinner" aria-hidden="true"></span>
           <div>
             <strong id="map-loading-title">Loading visible map…</strong>
-            <span id="map-loading-detail">Fetching building data…</span>
+            <span id="map-loading-detail">Loading building tiles…</span>
           </div>
         </div>
 
-        <div class="map-attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors</div>
+        <div class="map-attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · <a href="https://maptiles.api.hel.fi/" target="_blank" rel="noreferrer">Helsinki building tiles</a></div>
         <div id="toast" class="toast" role="status" aria-live="polite"></div>
       </main>
     </div>
@@ -184,8 +185,8 @@
       <button id="close-about" class="dialog-close" type="button" aria-label="Close">×</button>
       <p class="eyebrow">ABOUT SUNFINDER</p>
       <h2>Sunlight, block by block.</h2>
-      <p>Sunfinder’s Python service calculates the sun direction for Helsinki, fetches building footprints, and projects each estimated building shadow. Your browser renders the interactive map.</p>
-      <p>In live mode, cloud cover softens or hides the projected shadows. The beta direct sun estimate is one city level hint. Buildings and trees are handled separately by the map. Pick another time and the map shows clear sky potential instead. Building footprints come from OpenStreetMap when available. Use this to find a nice spot in the sun, not as a survey or safety tool.</p>
+      <p>Sunfinder’s Python service supplies the sun angle, sky estimate, and direct sun nowcast. Compact building tiles load in the browser, and the browser projects their shadows while you move through time.</p>
+      <p>In live mode, cloud cover softens or hides the projected shadows. The beta direct sun estimate is one city level hint. Buildings and trees are handled separately by the map. Pick another time and the map shows clear sky potential instead. Building tiles are based on OpenStreetMap data. Use this to find a nice spot in the sun, not as a survey or safety tool.</p>
     </dialog>
 
     <dialog id="nowcast-dialog" class="about-dialog nowcast-dialog">
