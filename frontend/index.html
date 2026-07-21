@@ -148,7 +148,7 @@
           <p class="eyebrow">FIND A PLACE</p>
           <form class="place-search" id="place-search-form" role="search" autocomplete="off">
             <label class="sr-only" for="place-search">Search for a Helsinki bar, café, landmark, or address</label>
-            <input id="place-search" type="search" maxlength="100" placeholder="Bar, café or address" aria-controls="place-search-results" />
+            <input id="place-search" type="search" maxlength="100" placeholder="Bar, café or address" role="combobox" aria-autocomplete="list" aria-controls="place-search-results" aria-expanded="false" aria-haspopup="listbox" />
             <button id="place-search-submit" class="place-search-submit" type="submit">Find</button>
           </form>
           <div class="place-search-results" id="place-search-results" role="listbox" aria-live="polite" hidden></div>
@@ -188,7 +188,7 @@
           </div>
         </div>
 
-        <div class="map-attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · <a href="https://maptiles.api.hel.fi/" target="_blank" rel="noreferrer">Helsinki building tiles</a> · <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noreferrer">place search</a></div>
+        <div class="map-attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · <a href="https://maptiles.api.hel.fi/" target="_blank" rel="noreferrer">Helsinki building tiles</a> · <a href="https://photon.komoot.io/" target="_blank" rel="noreferrer">Photon suggestions</a> · <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noreferrer">Nominatim search</a></div>
         <div id="toast" class="toast" role="status" aria-live="polite"></div>
       </main>
     </div>

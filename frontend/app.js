@@ -27,6 +27,7 @@ const BUILDING_TILE_SOURCE = 'helsinki-building-tiles';
 const BUILDING_TILE_LAYER = 'building';
 const BUILDING_TILE_URL = 'https://maptiles.api.hel.fi/data/helsinki.json';
 const CONDITIONS_DEBOUNCE_MS = 260;
+const PLACE_SUGGESTION_DEBOUNCE_MS = 280;
 
 const state = {
   date: new Date(),
@@ -58,6 +59,9 @@ const state = {
   placeMarker: null,
   placeSearchAbortController: null,
   placeSearchRequestId: 0,
+  placeSuggestionAbortController: null,
+  placeSuggestionRequestId: 0,
+  placeSuggestionTimer: null,
   conditionsAbortController: null,
   conditionsRequestId: 0,
   mapMoveRequestId: 0
@@ -251,12 +255,12 @@ function wireControls() {
   elements['place-search-form'].addEventListener('submit', searchPlaces);
   elements['close-place-panel'].addEventListener('click', () => setPlacePanelVisible(false));
   elements['open-place-panel'].addEventListener('click', () => setPlacePanelVisible(true));
-  elements['place-search'].addEventListener('input', () => {
-    state.placeSearchAbortController?.abort();
-    hidePlaceSearchResults();
-  });
+  elements['place-search'].addEventListener('input', schedulePlaceSuggestions);
   elements['place-search'].addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') hidePlaceSearchResults();
+    if (event.key === 'Escape') {
+      cancelPlaceSuggestions();
+      hidePlaceSearchResults();
+    }
   });
   elements['place-select'].addEventListener('change', () => {
     const [lat, lng, zoom, pitch] = elements['place-select'].value.split(',').map(Number);
@@ -294,6 +298,7 @@ async function searchPlaces(event) {
   }
 
   const requestId = ++state.placeSearchRequestId;
+  cancelPlaceSuggestions();
   state.placeSearchAbortController?.abort();
   state.placeSearchAbortController = new AbortController();
   setPlaceSearchLoading(true);
@@ -330,6 +335,61 @@ async function searchPlaces(event) {
   }
 }
 
+function schedulePlaceSuggestions() {
+  state.placeSearchAbortController?.abort();
+  cancelPlaceSuggestions();
+  hidePlaceSearchResults();
+
+  const query = elements['place-search'].value.trim();
+  if (query.length < 2) return;
+
+  const requestId = ++state.placeSuggestionRequestId;
+  state.placeSuggestionTimer = window.setTimeout(() => {
+    loadPlaceSuggestions(query, requestId);
+  }, PLACE_SUGGESTION_DEBOUNCE_MS);
+}
+
+async function loadPlaceSuggestions(query, requestId) {
+  if (requestId !== state.placeSuggestionRequestId) return;
+
+  state.placeSuggestionTimer = null;
+  const abortController = new AbortController();
+  state.placeSuggestionAbortController?.abort();
+  state.placeSuggestionAbortController = abortController;
+  elements['place-search-results'].setAttribute('aria-busy', 'true');
+
+  try {
+    const parameters = new URLSearchParams({ q: query });
+    const response = await fetch(`/api/place-suggestions?${parameters}`, { signal: abortController.signal });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || `The API returned ${response.status}`);
+    if (requestId !== state.placeSuggestionRequestId || query !== elements['place-search'].value.trim()) return;
+
+    const results = (Array.isArray(payload.results) ? payload.results : [])
+      .map(normalisePlaceSearchResult)
+      .filter(Boolean);
+    renderPlaceSearchResults(results);
+  } catch (error) {
+    if (error.name !== 'AbortError' && requestId === state.placeSuggestionRequestId) {
+      console.warn('Place suggestions failed', error);
+    }
+  } finally {
+    if (requestId === state.placeSuggestionRequestId) {
+      elements['place-search-results'].setAttribute('aria-busy', 'false');
+      if (state.placeSuggestionAbortController === abortController) state.placeSuggestionAbortController = null;
+    }
+  }
+}
+
+function cancelPlaceSuggestions() {
+  window.clearTimeout(state.placeSuggestionTimer);
+  state.placeSuggestionTimer = null;
+  state.placeSuggestionAbortController?.abort();
+  state.placeSuggestionAbortController = null;
+  state.placeSuggestionRequestId += 1;
+  elements['place-search-results']?.setAttribute('aria-busy', 'false');
+}
+
 function normalisePlaceSearchResult(item) {
   const latitude = Number(item?.latitude);
   const longitude = Number(item?.longitude);
@@ -357,7 +417,7 @@ function renderPlaceSearchResults(results, activeIndex = -1) {
     const glyph = document.createElement('span');
     glyph.className = 'place-search-result-glyph';
     glyph.setAttribute('aria-hidden', 'true');
-    glyph.textContent = place.kind === 'bar' || place.kind === 'amenity' ? '●' : '⌖';
+    glyph.textContent = ['amenity', 'bar', 'cafe', 'pub', 'restaurant'].includes(place.kind) ? '●' : '⌖';
     const copy = document.createElement('span');
     const name = document.createElement('strong');
     name.textContent = place.name;
@@ -366,6 +426,7 @@ function renderPlaceSearchResults(results, activeIndex = -1) {
     copy.append(name, detail);
     button.append(glyph, copy);
     button.addEventListener('click', () => {
+      cancelPlaceSuggestions();
       elements['place-search'].value = place.name;
       moveToPlace(place, { announce: true });
       hidePlaceSearchResults();
@@ -373,6 +434,7 @@ function renderPlaceSearchResults(results, activeIndex = -1) {
     container.append(button);
   });
   container.hidden = !results.length;
+  elements['place-search'].setAttribute('aria-expanded', String(results.length > 0));
 }
 
 function hidePlaceSearchResults() {
@@ -380,6 +442,8 @@ function hidePlaceSearchResults() {
   if (!container) return;
   container.replaceChildren();
   container.hidden = true;
+  container.setAttribute('aria-busy', 'false');
+  elements['place-search']?.setAttribute('aria-expanded', 'false');
 }
 
 function setPlaceSearchLoading(isLoading) {
@@ -495,6 +559,7 @@ function setPlacePanelVisible(isVisible) {
   elements['open-place-panel'].hidden = isVisible;
   if (!isVisible) {
     state.placeSearchAbortController?.abort();
+    cancelPlaceSuggestions();
     hidePlaceSearchResults();
   }
 }

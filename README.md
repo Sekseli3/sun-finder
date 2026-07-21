@@ -38,10 +38,12 @@ Open [http://localhost:4173](http://localhost:4173).
   wait for a new server shadow response on every slider move.
 - `GET /api/buildings` is a Python fallback. It reads Helsinki's official WFS
   building layer if the browser tile source is unavailable.
-- `GET /api/places` finds a submitted Helsinki venue, landmark, or address.
-  It has a few quick local venue matches, then uses cached OpenStreetMap place
-  search with a one-request-per-second server-side gate. It does not search on
-  every keystroke.
+- `GET /api/place-suggestions` returns debounced Helsinki matches while a
+  place name is being typed. It checks local favourites first, then uses
+  cached Photon search limited to Helsinki.
+- `GET /api/places` resolves a submitted Helsinki venue, landmark, or address.
+  It uses cached OpenStreetMap Nominatim search with a one-request-per-second
+  server-side gate.
 - `GET /api/scene` remains available for a complete server-side scene response.
 - The backend calculates sun direction in the `Europe/Helsinki` time zone,
   including daylight-saving transitions.

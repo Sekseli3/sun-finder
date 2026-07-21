@@ -3,7 +3,14 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from backend.main import PlaceSearchStore, nominatim_to_place_results, places
+from backend.main import (
+    PlaceSearchStore,
+    PlaceSuggestionStore,
+    nominatim_to_place_results,
+    photon_to_place_results,
+    place_suggestions,
+    places,
+)
 
 
 class PlaceSearchTests(unittest.IsolatedAsyncioTestCase):
@@ -43,6 +50,43 @@ class PlaceSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0]["detail"], "Eerikinkatu 24, Kamppi, Helsinki")
         self.assertEqual(results[0]["kind"], "amenity")
 
+    def test_curated_suggestions_are_instant_and_do_not_call_photon(self) -> None:
+        store = PlaceSuggestionStore()
+
+        with patch("backend.main.fetch_photon_suggestions") as fetch:
+            results, source, cached = store.get("Eerik")
+
+        fetch.assert_not_called()
+        self.assertFalse(cached)
+        self.assertEqual(source, "curated")
+        self.assertEqual(results[0]["name"], "Eerikin Kulma")
+
+    def test_photon_results_keep_only_helsinki_coordinates_and_clean_labels(self) -> None:
+        results = photon_to_place_results(
+            [
+                {
+                    "properties": {
+                        "name": "Buenos Aires Cafe/Bar",
+                        "street": "Eerikinkatu",
+                        "housenumber": "24",
+                        "district": "Kamppi",
+                        "city": "Helsinki",
+                        "osm_value": "cafe",
+                    },
+                    "geometry": {"type": "Point", "coordinates": [24.932312, 60.166064]},
+                },
+                {
+                    "properties": {"name": "Outside Helsinki", "city": "Tampere"},
+                    "geometry": {"type": "Point", "coordinates": [23.761, 61.498]},
+                },
+            ]
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["name"], "Buenos Aires Cafe/Bar")
+        self.assertEqual(results[0]["detail"], "Eerikinkatu 24, Kamppi, Helsinki")
+        self.assertEqual(results[0]["kind"], "cafe")
+
     async def test_places_endpoint_returns_small_safe_results_for_the_browser(self) -> None:
         search_result = [
             {
@@ -59,6 +103,23 @@ class PlaceSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["meta"]["available"])
         self.assertFalse(payload["meta"]["cached"])
         self.assertEqual(payload["results"], search_result)
+
+    async def test_suggestion_endpoint_returns_small_safe_results_for_the_browser(self) -> None:
+        suggestion = [
+            {
+                "name": "Buenos Aires Cafe/Bar",
+                "detail": "Eerikinkatu 24",
+                "latitude": 60.166064,
+                "longitude": 24.932312,
+                "kind": "bar",
+            }
+        ]
+        with patch("backend.main.place_suggestion_store.get", return_value=(suggestion, "photon", False)):
+            payload = await place_suggestions(q="Buenos")
+
+        self.assertTrue(payload["meta"]["available"])
+        self.assertFalse(payload["meta"]["cached"])
+        self.assertEqual(payload["results"], suggestion)
 
 
 if __name__ == "__main__":

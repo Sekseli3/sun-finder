@@ -42,6 +42,7 @@ HELSINKI_WFS_ENDPOINT = "https://kartta.hel.fi/ws/geoserver/avoindata/wfs"
 HELSINKI_WFS_BUILDINGS_LAYER = "avoindata:Rakennukset_alue_rekisteritiedot"
 OPEN_METEO_ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 NOMINATIM_SEARCH_ENDPOINT = "https://nominatim.openstreetmap.org/search"
+PHOTON_SUGGESTION_ENDPOINT = "https://photon.komoot.io/api/"
 WEATHER_CACHE_SECONDS = 5 * 60
 HELSINKI_WFS_HTTP_TIMEOUT_SECONDS = 12
 FAILED_BUILDING_CACHE_SECONDS = 15
@@ -50,6 +51,11 @@ FAILED_PLACE_SEARCH_CACHE_SECONDS = 2 * 60
 PLACE_SEARCH_MIN_REQUEST_INTERVAL_SECONDS = 1.1
 PLACE_SEARCH_HTTP_TIMEOUT_SECONDS = 8
 MAX_PLACE_SEARCH_RESULTS = 5
+PLACE_SUGGESTION_CACHE_SECONDS = 20 * 60
+FAILED_PLACE_SUGGESTION_CACHE_SECONDS = 60
+PLACE_SUGGESTION_MIN_REQUEST_INTERVAL_SECONDS = 0.5
+PLACE_SUGGESTION_HTTP_TIMEOUT_SECONDS = 6
+MAX_PLACE_SUGGESTIONS = 6
 
 # This bounds check keeps the City of Helsinki building query firmly scoped to
 # the product's Helsinki use case. It is intentionally broader than city centre.
@@ -303,13 +309,166 @@ def curated_place_results(query: str) -> list[dict[str, Any]]:
     if not query_key:
         return []
     query_words = set(query_key.split())
-    matches: list[dict[str, Any]] = []
-    for place in CURATED_PLACES:
-        searchable = " ".join((place["name"], place["detail"], *place["aliases"]))
-        place_key = normalise_place_query(searchable)
-        if query_key in place_key or query_words.issubset(set(place_key.split())):
-            matches.append({key: place[key] for key in ("name", "detail", "latitude", "longitude", "kind")})
-    return matches
+    matches: list[tuple[int, int, dict[str, Any]]] = []
+    for index, place in enumerate(CURATED_PLACES):
+        name_keys = [normalise_place_query(place["name"])]
+        name_keys.extend(normalise_place_query(alias) for alias in place["aliases"])
+        detail_key = normalise_place_query(place["detail"])
+        searchable_words = set(" ".join((*name_keys, detail_key)).split())
+
+        if query_key in name_keys:
+            score = 0
+        elif any(name_key.startswith(query_key) for name_key in name_keys):
+            score = 1
+        elif any(query_key in name_key for name_key in name_keys):
+            score = 2
+        elif query_key in detail_key:
+            score = 3
+        elif query_words.issubset(searchable_words):
+            score = 4
+        else:
+            continue
+        result = {key: place[key] for key in ("name", "detail", "latitude", "longitude", "kind")}
+        matches.append((score, index, result))
+    return [result for _, _, result in sorted(matches)]
+
+
+class PlaceSuggestionStore:
+    """Cache and gently pace Helsinki-only place suggestions.
+
+    Photon supports search while someone is typing. Curated matches skip the
+    network entirely, while the small server-side gate and cache keep the
+    public suggestion service from receiving a request for every key press.
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict[str, PlaceSearchCacheEntry] = {}
+        self._cache_lock = threading.Lock()
+        self._upstream_lock = threading.Lock()
+        self._last_upstream_request_at = 0.0
+
+    def get(self, query: str) -> tuple[list[dict[str, Any]], str, bool]:
+        cache_key = normalise_place_query(query)
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
+            if cached and cached.expires_at > now:
+                return cached.results, cached.source, True
+
+        curated = curated_place_results(query)
+        if curated:
+            return curated[:MAX_PLACE_SUGGESTIONS], "curated", False
+
+        with self._upstream_lock:
+            now = time.monotonic()
+            with self._cache_lock:
+                cached = self._cache.get(cache_key)
+                if cached and cached.expires_at > now:
+                    return cached.results, cached.source, True
+
+            wait_seconds = PLACE_SUGGESTION_MIN_REQUEST_INTERVAL_SECONDS - (now - self._last_upstream_request_at)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            self._last_upstream_request_at = time.monotonic()
+
+            try:
+                results = fetch_photon_suggestions(query)
+                source = "photon"
+                ttl_seconds = PLACE_SUGGESTION_CACHE_SECONDS
+            except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
+                print(f"Place suggestions failed: {error}")
+                results = []
+                source = "unavailable"
+                ttl_seconds = FAILED_PLACE_SUGGESTION_CACHE_SECONDS
+
+            with self._cache_lock:
+                self._cache[cache_key] = PlaceSearchCacheEntry(
+                    expires_at=time.monotonic() + ttl_seconds,
+                    results=results,
+                    source=source,
+                )
+            return results, source, False
+
+
+place_suggestion_store = PlaceSuggestionStore()
+
+
+def fetch_photon_suggestions(query_text: str) -> list[dict[str, Any]]:
+    south, west, north, east = HELSINKI_REGION
+    query = urlencode(
+        {
+            "q": query_text,
+            "limit": str(MAX_PLACE_SUGGESTIONS),
+            "bbox": f"{west:.2f},{south:.2f},{east:.2f},{north:.2f}",
+            "lat": f"{HELSINKI_LATITUDE:.4f}",
+            "lon": f"{HELSINKI_LONGITUDE:.4f}",
+            "lang": "en",
+        }
+    )
+    request = Request(
+        f"{PHOTON_SUGGESTION_ENDPOINT}?{query}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "SunfinderHelsinki/1.0 (+https://sunfinder-helsinki.onrender.com/)",
+        },
+    )
+    with urlopen(request, timeout=PLACE_SUGGESTION_HTTP_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed public geocoder behind a cache and gate
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("features"), list):
+        raise ValueError("Place suggestion search returned an unexpected payload")
+    return photon_to_place_results(payload["features"])
+
+
+def photon_to_place_results(features: list[Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen_coordinates: set[tuple[float, float]] = set()
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        geometry = feature.get("geometry")
+        properties = feature.get("properties")
+        if not isinstance(geometry, dict) or not isinstance(properties, dict):
+            continue
+        coordinates = geometry.get("coordinates")
+        if not isinstance(coordinates, list) or len(coordinates) < 2:
+            continue
+        try:
+            longitude = float(coordinates[0])
+            latitude = float(coordinates[1])
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(latitude) or not math.isfinite(longitude) or not is_in_helsinki_region(latitude, longitude):
+            continue
+        coordinate_key = (round(latitude, 6), round(longitude, 6))
+        if coordinate_key in seen_coordinates:
+            continue
+        seen_coordinates.add(coordinate_key)
+        name, detail = photon_result_name(properties)
+        results.append(
+            {
+                "name": name,
+                "detail": detail,
+                "latitude": latitude,
+                "longitude": longitude,
+                "kind": str(properties.get("osm_value") or properties.get("osm_key") or properties.get("type") or "place"),
+            }
+        )
+        if len(results) >= MAX_PLACE_SUGGESTIONS:
+            break
+    return results
+
+
+def photon_result_name(properties: dict[str, Any]) -> tuple[str, str]:
+    raw_name = str(properties.get("name") or "").strip()
+    street = str(properties.get("street") or "").strip()
+    house_number = str(properties.get("housenumber") or "").strip()
+    street_address = " ".join(part for part in (street, house_number) if part)
+    district = str(properties.get("district") or properties.get("locality") or "").strip()
+    city = str(properties.get("city") or "Helsinki").strip()
+    name = raw_name or street_address or district or city or "Helsinki place"
+    detail_parts = [part for part in (street_address if raw_name else "", district, city) if part]
+    detail = ", ".join(dict.fromkeys(detail_parts)) or "Helsinki"
+    return name, detail
 
 
 def fetch_nominatim_places(query_text: str) -> list[dict[str, Any]]:
@@ -940,6 +1099,24 @@ async def places(
     if len(normalise_place_query(query)) < 2:
         raise HTTPException(status_code=422, detail="Type at least two letters to search for a place")
     results, source, from_cache = await asyncio.to_thread(place_search_store.get, query)
+    return {
+        "results": results,
+        "meta": {
+            "cached": from_cache,
+            "available": source != "unavailable",
+        },
+    }
+
+
+@app.get("/api/place-suggestions")
+async def place_suggestions(
+    q: str = Query(description="At least two letters from a Helsinki place name", max_length=100),
+) -> dict[str, Any]:
+    """Return a short, debounced-friendly list of Helsinki place suggestions."""
+    query = " ".join(q.split())
+    if len(normalise_place_query(query)) < 2:
+        return {"results": [], "meta": {"cached": False, "available": True}}
+    results, source, from_cache = await asyncio.to_thread(place_suggestion_store.get, query)
     return {
         "results": results,
         "meta": {
