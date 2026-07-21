@@ -71,11 +71,11 @@ window.addEventListener('DOMContentLoaded', initialise);
 function initialise() {
   [
     'date-time', 'time-slider', 'timeline-date', 'timeline-time', 'live-toggle',
-    'refresh-rate', 'now-button', 'mobile-controls-toggle', 'control-panel', 'calendar-reset', 'sun-orb', 'sun-orbit', 'sun-pointer',
+    'refresh-rate', 'now-button', 'mobile-controls-toggle', 'control-panel', 'close-control-panel', 'open-control-panel', 'calendar-reset', 'sun-orb', 'sun-orbit', 'sun-pointer',
     'solar-state', 'solar-altitude', 'solar-detail', 'sunrise', 'sunset',
     'weather-callout', 'weather-glyph', 'weather-title', 'weather-detail', 'clear-sky-toggle',
     'nowcast-control', 'nowcast-toggle', 'nowcast-info', 'nowcast-dialog', 'nowcast-range', 'close-nowcast', 'legend-shadow-label',
-    'header-status', 'place-search-form', 'place-search', 'place-search-submit', 'place-search-results', 'place-select', 'load-buildings', 'building-status', 'data-note',
+    'header-status', 'place-panel', 'close-place-panel', 'open-place-panel', 'place-search-form', 'place-search', 'place-search-submit', 'place-search-results', 'place-select', 'load-buildings', 'building-status', 'data-note',
     'map-loading', 'map-loading-title', 'map-loading-detail', 'inspector', 'inspector-title',
     'inspector-detail', 'close-inspector', 'locate-button', 'about-button', 'about-dialog',
     'close-about', 'toast'
@@ -229,6 +229,8 @@ function wireControls() {
   elements['mobile-controls-toggle'].addEventListener('click', () => {
     setMobileControlsOpen(!elements['control-panel'].classList.contains('mobile-expanded'));
   });
+  elements['close-control-panel'].addEventListener('click', () => setControlPanelVisible(false));
+  elements['open-control-panel'].addEventListener('click', () => setControlPanelVisible(true));
   elements['calendar-reset'].addEventListener('click', setDateToNow);
 
   document.querySelectorAll('.dimension-option').forEach((button) => {
@@ -247,6 +249,8 @@ function wireControls() {
   });
 
   elements['place-search-form'].addEventListener('submit', searchPlaces);
+  elements['close-place-panel'].addEventListener('click', () => setPlacePanelVisible(false));
+  elements['open-place-panel'].addEventListener('click', () => setPlacePanelVisible(true));
   elements['place-search'].addEventListener('input', () => {
     state.placeSearchAbortController?.abort();
     hidePlaceSearchResults();
@@ -477,6 +481,22 @@ function setMobileControlsOpen(isOpen) {
   button.setAttribute('aria-expanded', String(isOpen));
   button.textContent = isOpen ? 'Done' : 'Controls';
   if (state.map) window.setTimeout(() => state.map.resize(), 260);
+}
+
+function setControlPanelVisible(isVisible) {
+  elements['control-panel'].hidden = !isVisible;
+  elements['open-control-panel'].hidden = isVisible;
+  if (isVisible) setMobileControlsOpen(false);
+  if (state.map) window.setTimeout(() => state.map.resize(), 260);
+}
+
+function setPlacePanelVisible(isVisible) {
+  elements['place-panel'].hidden = !isVisible;
+  elements['open-place-panel'].hidden = isVisible;
+  if (!isVisible) {
+    state.placeSearchAbortController?.abort();
+    hidePlaceSearchResults();
+  }
 }
 
 function setLive(value) {

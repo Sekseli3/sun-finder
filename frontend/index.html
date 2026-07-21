@@ -39,8 +39,9 @@
         </div>
 
         <div class="topbar-actions">
-          <button class="icon-button" id="locate-button" type="button" title="Use my location" aria-label="Use my location">
+          <button class="location-button" id="locate-button" type="button" title="Center the map on my location" aria-label="Find my location and center the map">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.4A3.6 3.6 0 1 0 12 15.6 3.6 3.6 0 0 0 12 8.4Zm0-6.4v3m0 14v3M2 12h3m14 0h3M5 5l2.1 2.1m9.8 9.8L19 19m0-14-2.1 2.1M7.1 16.9 5 19"/></svg>
+            <span>Find me</span>
           </button>
           <button class="icon-button" id="about-button" type="button" title="About the map" aria-label="About the map">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 10.8v5.1m0-8.1h.01"/></svg>
@@ -61,6 +62,7 @@
             <div class="panel-heading-actions">
               <button class="now-button" id="now-button" type="button">Now</button>
               <button class="mobile-controls-toggle" id="mobile-controls-toggle" type="button" aria-controls="control-panel" aria-expanded="false">Controls</button>
+              <button class="panel-close" id="close-control-panel" type="button" title="Hide sun controls" aria-label="Hide sun controls">×</button>
             </div>
           </div>
 
@@ -141,7 +143,8 @@
           </div>
         </section>
 
-        <section class="place-panel panel" aria-label="Find a Helsinki place and load its buildings">
+        <section class="place-panel panel" id="place-panel" aria-label="Find a Helsinki place and load its buildings">
+          <button class="panel-close place-panel-close" id="close-place-panel" type="button" title="Hide place search" aria-label="Hide place search">×</button>
           <p class="eyebrow">FIND A PLACE</p>
           <form class="place-search" id="place-search-form" role="search" autocomplete="off">
             <label class="sr-only" for="place-search">Search for a Helsinki bar, café, landmark, or address</label>
@@ -162,6 +165,9 @@
           <button id="load-buildings" class="load-button" type="button" title="Refresh the building tiles for the part of the map you can see" aria-label="Refresh the building tiles for the part of the map you can see">Refresh buildings</button>
           <p class="data-note" id="data-note">Search a spot or use a quick place. Building tiles follow the visible map.</p>
         </section>
+
+        <button class="panel-reopen control-panel-reopen" id="open-control-panel" type="button" hidden>Show sun controls</button>
+        <button class="panel-reopen place-panel-reopen" id="open-place-panel" type="button" hidden>Search places</button>
 
         <section class="inspector panel" id="inspector" aria-live="polite" hidden>
           <button class="inspector-close" id="close-inspector" type="button" aria-label="Close building details">×</button>
