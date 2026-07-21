@@ -2,7 +2,7 @@
 
 The browser handles interaction, visible building tiles, and fast local shadow
 previews. This module owns solar geometry, weather, the direct-sun nowcast,
-and a City of Helsinki building fallback for API callers.
+place search, and a City of Helsinki building fallback for API callers.
 """
 
 from __future__ import annotations
@@ -41,9 +41,15 @@ MAX_BUILDINGS_PER_REQUEST = 3_000
 HELSINKI_WFS_ENDPOINT = "https://kartta.hel.fi/ws/geoserver/avoindata/wfs"
 HELSINKI_WFS_BUILDINGS_LAYER = "avoindata:Rakennukset_alue_rekisteritiedot"
 OPEN_METEO_ENDPOINT = "https://api.open-meteo.com/v1/forecast"
+NOMINATIM_SEARCH_ENDPOINT = "https://nominatim.openstreetmap.org/search"
 WEATHER_CACHE_SECONDS = 5 * 60
 HELSINKI_WFS_HTTP_TIMEOUT_SECONDS = 12
 FAILED_BUILDING_CACHE_SECONDS = 15
+PLACE_SEARCH_CACHE_SECONDS = 60 * 60
+FAILED_PLACE_SEARCH_CACHE_SECONDS = 2 * 60
+PLACE_SEARCH_MIN_REQUEST_INTERVAL_SECONDS = 1.1
+PLACE_SEARCH_HTTP_TIMEOUT_SECONDS = 8
+MAX_PLACE_SEARCH_RESULTS = 5
 
 # This bounds check keeps the City of Helsinki building query firmly scoped to
 # the product's Helsinki use case. It is intentionally broader than city centre.
@@ -77,6 +83,13 @@ class WeatherCacheEntry:
     weather: dict[str, Any]
 
 
+@dataclass
+class PlaceSearchCacheEntry:
+    expires_at: float
+    results: list[dict[str, Any]]
+    source: str
+
+
 def feature(name: str, height: float, coordinates: list[list[float]]) -> dict[str, Any]:
     """Create a small, durable fallback footprint for central Helsinki."""
     return {
@@ -100,6 +113,37 @@ FALLBACK_FEATURES = [
     feature("Töölönlahti block", 25, [[24.93018, 60.17643], [24.93144, 60.17675], [24.93183, 60.17623], [24.93055, 60.17594]]),
     feature("Kallio block", 23, [[24.95036, 60.18424], [24.95127, 60.18444], [24.95160, 60.18399], [24.95068, 60.18378]]),
 ]
+
+
+# These are useful Helsinki venues that should work even if a public place
+# index has not received a recent OpenStreetMap edit. They also make the first
+# search feel instant for the suggested examples.
+CURATED_PLACES = (
+    {
+        "name": "Bar Mendocino",
+        "detail": "Eerikinkatu",
+        "latitude": 60.1657789,
+        "longitude": 24.9313873,
+        "kind": "bar",
+        "aliases": ("bar mendocino", "mendocino"),
+    },
+    {
+        "name": "Eerikin Kulma",
+        "detail": "Eerikinkatu 28",
+        "latitude": 60.1658342,
+        "longitude": 24.9316017,
+        "kind": "bar",
+        "aliases": ("eerikin kulma", "eerikinkulma", "bar eerikinkulma", "pub ek"),
+    },
+    {
+        "name": "Buenos Aires Cafe/Bar",
+        "detail": "Eerikinkatu 24",
+        "latitude": 60.1660640,
+        "longitude": 24.9323120,
+        "kind": "bar",
+        "aliases": ("buenos aires", "bar buenos aires", "buenos aires cafe bar"),
+    },
+)
 
 
 class BuildingStore:
@@ -186,6 +230,167 @@ class WeatherStore:
 
 
 weather_store = WeatherStore()
+
+
+class PlaceSearchStore:
+    """A small cache and one-request-at-a-time gate for public place search.
+
+    Search is only invoked after a person submits the form. The gate keeps
+    requests to the public Nominatim service below its one request per second
+    policy, while the cache makes repeated venue searches free.
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict[str, PlaceSearchCacheEntry] = {}
+        self._cache_lock = threading.Lock()
+        self._upstream_lock = threading.Lock()
+        self._last_upstream_request_at = 0.0
+
+    def get(self, query: str) -> tuple[list[dict[str, Any]], str, bool]:
+        cache_key = normalise_place_query(query)
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
+            if cached and cached.expires_at > now:
+                return cached.results, cached.source, True
+
+        curated = curated_place_results(query)
+        if curated:
+            return curated, "curated", False
+
+        # Keep all outgoing requests serial so separate search terms do not
+        # accidentally turn a few quick taps into a burst against Nominatim.
+        with self._upstream_lock:
+            now = time.monotonic()
+            with self._cache_lock:
+                cached = self._cache.get(cache_key)
+                if cached and cached.expires_at > now:
+                    return cached.results, cached.source, True
+
+            wait_seconds = PLACE_SEARCH_MIN_REQUEST_INTERVAL_SECONDS - (now - self._last_upstream_request_at)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            self._last_upstream_request_at = time.monotonic()
+
+            try:
+                results = fetch_nominatim_places(query)
+                source = "nominatim"
+                ttl_seconds = PLACE_SEARCH_CACHE_SECONDS
+            except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
+                print(f"Place search failed: {error}")
+                results = []
+                source = "unavailable"
+                ttl_seconds = FAILED_PLACE_SEARCH_CACHE_SECONDS
+
+            with self._cache_lock:
+                self._cache[cache_key] = PlaceSearchCacheEntry(
+                    expires_at=time.monotonic() + ttl_seconds,
+                    results=results,
+                    source=source,
+                )
+            return results, source, False
+
+
+place_search_store = PlaceSearchStore()
+
+
+def normalise_place_query(value: str) -> str:
+    return " ".join("".join(character if character.isalnum() else " " for character in value.casefold()).split())
+
+
+def curated_place_results(query: str) -> list[dict[str, Any]]:
+    query_key = normalise_place_query(query)
+    if not query_key:
+        return []
+    query_words = set(query_key.split())
+    matches: list[dict[str, Any]] = []
+    for place in CURATED_PLACES:
+        searchable = " ".join((place["name"], place["detail"], *place["aliases"]))
+        place_key = normalise_place_query(searchable)
+        if query_key in place_key or query_words.issubset(set(place_key.split())):
+            matches.append({key: place[key] for key in ("name", "detail", "latitude", "longitude", "kind")})
+    return matches
+
+
+def fetch_nominatim_places(query_text: str) -> list[dict[str, Any]]:
+    full_query = query_text if "helsinki" in query_text.casefold() else f"{query_text}, Helsinki"
+    query = urlencode(
+        {
+            "q": full_query,
+            "format": "jsonv2",
+            "limit": str(MAX_PLACE_SEARCH_RESULTS),
+            "countrycodes": "fi",
+            "viewbox": "24.60,60.38,25.40,59.95",
+            "bounded": "1",
+            "addressdetails": "1",
+            "dedupe": "1",
+        }
+    )
+    request = Request(
+        f"{NOMINATIM_SEARCH_ENDPOINT}?{query}",
+        headers={
+            "Accept": "application/json",
+            "Accept-Language": "fi,en",
+            "User-Agent": "SunfinderHelsinki/1.0 (+https://sunfinder-helsinki.onrender.com/)",
+        },
+    )
+    with urlopen(request, timeout=PLACE_SEARCH_HTTP_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed public geocoder with rate limiting
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("Place search returned an unexpected payload")
+    return nominatim_to_place_results(payload)
+
+
+def nominatim_to_place_results(payload: list[Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen_coordinates: set[tuple[float, float]] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            latitude = float(item["lat"])
+            longitude = float(item["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(latitude) or not math.isfinite(longitude) or not is_in_helsinki_region(latitude, longitude):
+            continue
+        coordinate_key = (round(latitude, 6), round(longitude, 6))
+        if coordinate_key in seen_coordinates:
+            continue
+        seen_coordinates.add(coordinate_key)
+        name, detail = nominatim_result_name(item)
+        results.append(
+            {
+                "name": name,
+                "detail": detail,
+                "latitude": latitude,
+                "longitude": longitude,
+                "kind": str(item.get("category") or item.get("type") or "place"),
+            }
+        )
+        if len(results) >= MAX_PLACE_SEARCH_RESULTS:
+            break
+    return results
+
+
+def nominatim_result_name(item: dict[str, Any]) -> tuple[str, str]:
+    raw_name = str(item.get("name") or "").strip()
+    address = item.get("address") if isinstance(item.get("address"), dict) else {}
+    road = str(address.get("road") or "").strip()
+    house_number = str(address.get("house_number") or "").strip()
+    street_address = " ".join(part for part in (road, house_number) if part)
+    display_parts = [part.strip() for part in str(item.get("display_name") or "").split(",") if part.strip()]
+    name = raw_name or street_address or ", ".join(display_parts[:2]) or "Helsinki place"
+    neighbourhood = str(address.get("neighbourhood") or address.get("suburb") or "").strip()
+    locality = str(address.get("city") or address.get("town") or address.get("municipality") or "Helsinki").strip()
+    detail_parts = [part for part in (street_address if raw_name else "", neighbourhood, locality) if part]
+    detail = ", ".join(dict.fromkeys(detail_parts)) or "Helsinki"
+    return name, detail
+
+
+def is_in_helsinki_region(latitude: float, longitude: float) -> bool:
+    south, west, north, east = HELSINKI_REGION
+    return south <= latitude <= north and west <= longitude <= east
 
 
 def parse_bounds(raw_bounds: str) -> Bounds:
@@ -724,6 +929,24 @@ async def conditions(
 ) -> dict[str, Any]:
     """Return current sky state without waiting for building footprints."""
     return await current_conditions(parse_timestamp(at), live)
+
+
+@app.get("/api/places")
+async def places(
+    q: str = Query(description="A Helsinki venue, park, landmark, or address", max_length=100),
+) -> dict[str, Any]:
+    """Find a submitted place query without exposing the geocoder to the browser."""
+    query = " ".join(q.split())
+    if len(normalise_place_query(query)) < 2:
+        raise HTTPException(status_code=422, detail="Type at least two letters to search for a place")
+    results, source, from_cache = await asyncio.to_thread(place_search_store.get, query)
+    return {
+        "results": results,
+        "meta": {
+            "cached": from_cache,
+            "available": source != "unavailable",
+        },
+    }
 
 
 @app.get("/api/buildings")

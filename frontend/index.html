@@ -141,9 +141,15 @@
           </div>
         </section>
 
-        <section class="place-panel panel" aria-label="Map location and building data">
-          <p class="eyebrow">BUILDINGS</p>
-          <label class="sr-only" for="place-select">Jump to a Helsinki place</label>
+        <section class="place-panel panel" aria-label="Find a Helsinki place and load its buildings">
+          <p class="eyebrow">FIND A PLACE</p>
+          <form class="place-search" id="place-search-form" role="search" autocomplete="off">
+            <label class="sr-only" for="place-search">Search for a Helsinki bar, café, landmark, or address</label>
+            <input id="place-search" type="search" maxlength="100" placeholder="Bar, café or address" aria-controls="place-search-results" />
+            <button id="place-search-submit" class="place-search-submit" type="submit">Find</button>
+          </form>
+          <div class="place-search-results" id="place-search-results" role="listbox" aria-live="polite" hidden></div>
+          <label class="sr-only" for="place-select">Quick Helsinki places</label>
           <select id="place-select">
             <option value="60.1657789,24.9313873,16.35,58">Bar Mendocino · Eerikinkatu</option>
             <option value="60.1697,24.9525,15.8,58">Senate Square</option>
@@ -154,7 +160,7 @@
           </select>
           <p class="building-status" id="building-status">Loading visible map…</p>
           <button id="load-buildings" class="load-button" type="button" title="Refresh the building tiles for the part of the map you can see" aria-label="Refresh the building tiles for the part of the map you can see">Refresh buildings</button>
-          <p class="data-note" id="data-note">Building tiles follow the visible map.</p>
+          <p class="data-note" id="data-note">Search a spot or use a quick place. Building tiles follow the visible map.</p>
         </section>
 
         <section class="inspector panel" id="inspector" aria-live="polite" hidden>
@@ -176,7 +182,7 @@
           </div>
         </div>
 
-        <div class="map-attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · <a href="https://maptiles.api.hel.fi/" target="_blank" rel="noreferrer">Helsinki building tiles</a></div>
+        <div class="map-attribution">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · <a href="https://maptiles.api.hel.fi/" target="_blank" rel="noreferrer">Helsinki building tiles</a> · <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noreferrer">place search</a></div>
         <div id="toast" class="toast" role="status" aria-live="polite"></div>
       </main>
     </div>

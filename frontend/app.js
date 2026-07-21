@@ -13,6 +13,13 @@ const DEFAULT_MAP_VIEW = {
   pitch: 58,
   bearing: -18
 };
+const DEFAULT_PLACE = {
+  name: 'Bar Mendocino',
+  detail: 'Eerikinkatu',
+  latitude: DEFAULT_MAP_VIEW.lat,
+  longitude: DEFAULT_MAP_VIEW.lng,
+  kind: 'bar'
+};
 const DEFAULT_BUILDING_HEIGHT = 15;
 const MAX_SHADOW_METERS = 560;
 const METERS_PER_DEGREE_LAT = 111_320;
@@ -48,6 +55,9 @@ const state = {
   buildingTileSyncTimer: null,
   buildingFallbackAbortController: null,
   buildingFallbackRequestId: 0,
+  placeMarker: null,
+  placeSearchAbortController: null,
+  placeSearchRequestId: 0,
   conditionsAbortController: null,
   conditionsRequestId: 0,
   mapMoveRequestId: 0
@@ -65,7 +75,7 @@ function initialise() {
     'solar-state', 'solar-altitude', 'solar-detail', 'sunrise', 'sunset',
     'weather-callout', 'weather-glyph', 'weather-title', 'weather-detail', 'clear-sky-toggle',
     'nowcast-control', 'nowcast-toggle', 'nowcast-info', 'nowcast-dialog', 'nowcast-range', 'close-nowcast', 'legend-shadow-label',
-    'header-status', 'place-select', 'load-buildings', 'building-status', 'data-note',
+    'header-status', 'place-search-form', 'place-search', 'place-search-submit', 'place-search-results', 'place-select', 'load-buildings', 'building-status', 'data-note',
     'map-loading', 'map-loading-title', 'map-loading-detail', 'inspector', 'inspector-title',
     'inspector-detail', 'close-inspector', 'locate-button', 'about-button', 'about-dialog',
     'close-about', 'toast'
@@ -119,6 +129,7 @@ function initialiseMap() {
   map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
   map.on('load', () => {
     installMapLayers();
+    showPlaceMarker(DEFAULT_PLACE);
     refreshScene({ quiet: true, showProgress: true });
     map.on('mouseenter', 'building-extrusions', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'building-extrusions', () => { map.getCanvas().style.cursor = ''; });
@@ -235,10 +246,24 @@ function wireControls() {
     updateHeaderStatus();
   });
 
+  elements['place-search-form'].addEventListener('submit', searchPlaces);
+  elements['place-search'].addEventListener('input', () => {
+    state.placeSearchAbortController?.abort();
+    hidePlaceSearchResults();
+  });
+  elements['place-search'].addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') hidePlaceSearchResults();
+  });
   elements['place-select'].addEventListener('change', () => {
     const [lat, lng, zoom, pitch] = elements['place-select'].value.split(',').map(Number);
     if (!state.map) return;
-    flyToAndLoad({ center: [lng, lat], zoom, pitch: state.is3d ? pitch : 0, bearing: -18, duration: 1150, essential: true });
+    const [name, detail] = elements['place-select'].selectedOptions[0].textContent.split(' · ');
+    moveToPlace({ name, detail: detail || 'Helsinki', latitude: lat, longitude: lng, kind: 'place' }, {
+      zoom,
+      pitch: state.is3d ? pitch : 0,
+      duration: 1150,
+      announce: true
+    });
   });
   elements['load-buildings'].addEventListener('click', () => refreshVisibleBuildingTiles({ showProgress: true, reload: true }));
   elements['close-inspector'].addEventListener('click', () => { elements['inspector'].hidden = true; });
@@ -253,6 +278,162 @@ function wireControls() {
   elements['nowcast-dialog'].addEventListener('click', (event) => {
     if (event.target === elements['nowcast-dialog']) elements['nowcast-dialog'].close();
   });
+}
+
+async function searchPlaces(event) {
+  event.preventDefault();
+  const query = elements['place-search'].value.trim();
+  if (query.length < 2) {
+    showToast('Type at least two letters to search for a place.');
+    elements['place-search'].focus();
+    return;
+  }
+
+  const requestId = ++state.placeSearchRequestId;
+  state.placeSearchAbortController?.abort();
+  state.placeSearchAbortController = new AbortController();
+  setPlaceSearchLoading(true);
+  hidePlaceSearchResults();
+
+  try {
+    const parameters = new URLSearchParams({ q: query });
+    const response = await fetch(`/api/places?${parameters}`, { signal: state.placeSearchAbortController.signal });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || `The API returned ${response.status}`);
+    if (requestId !== state.placeSearchRequestId || query !== elements['place-search'].value.trim()) return;
+
+    const results = (Array.isArray(payload.results) ? payload.results : [])
+      .map(normalisePlaceSearchResult)
+      .filter(Boolean);
+    if (!results.length) {
+      showToast(payload.meta?.available === false
+        ? 'Place search is unavailable. Try again shortly.'
+        : 'No Helsinki place found. Try the street address.');
+      return;
+    }
+
+    renderPlaceSearchResults(results, 0);
+    moveToPlace(results[0]);
+    showToast(results.length > 1
+      ? `Showing ${results[0].name}. Choose another match below if needed.`
+      : `Showing ${results[0].name}.`);
+  } catch (error) {
+    if (error.name === 'AbortError' || requestId !== state.placeSearchRequestId) return;
+    console.warn('Place search failed', error);
+    showToast('Couldn’t search for that place. Try again shortly.');
+  } finally {
+    if (requestId === state.placeSearchRequestId) setPlaceSearchLoading(false);
+  }
+}
+
+function normalisePlaceSearchResult(item) {
+  const latitude = Number(item?.latitude);
+  const longitude = Number(item?.longitude);
+  const name = String(item?.name || '').trim();
+  if (!name || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return {
+    name,
+    detail: String(item?.detail || 'Helsinki').trim(),
+    latitude,
+    longitude,
+    kind: String(item?.kind || 'place')
+  };
+}
+
+function renderPlaceSearchResults(results, activeIndex = -1) {
+  const container = elements['place-search-results'];
+  container.replaceChildren();
+  results.forEach((place, index) => {
+    const button = document.createElement('button');
+    button.className = 'place-search-result';
+    button.type = 'button';
+    button.setAttribute('role', 'option');
+    button.setAttribute('aria-selected', String(index === activeIndex));
+
+    const glyph = document.createElement('span');
+    glyph.className = 'place-search-result-glyph';
+    glyph.setAttribute('aria-hidden', 'true');
+    glyph.textContent = place.kind === 'bar' || place.kind === 'amenity' ? '●' : '⌖';
+    const copy = document.createElement('span');
+    const name = document.createElement('strong');
+    name.textContent = place.name;
+    const detail = document.createElement('small');
+    detail.textContent = place.detail;
+    copy.append(name, detail);
+    button.append(glyph, copy);
+    button.addEventListener('click', () => {
+      elements['place-search'].value = place.name;
+      moveToPlace(place, { announce: true });
+      hidePlaceSearchResults();
+    });
+    container.append(button);
+  });
+  container.hidden = !results.length;
+}
+
+function hidePlaceSearchResults() {
+  const container = elements['place-search-results'];
+  if (!container) return;
+  container.replaceChildren();
+  container.hidden = true;
+}
+
+function setPlaceSearchLoading(isLoading) {
+  const button = elements['place-search-submit'];
+  button.disabled = isLoading;
+  button.setAttribute('aria-busy', String(isLoading));
+  button.textContent = isLoading ? 'Finding…' : 'Find';
+}
+
+function moveToPlace(place, { zoom = 16.25, pitch = state.is3d ? 54 : 0, duration = 900, announce = false } = {}) {
+  if (!state.map) return;
+  showPlaceMarker(place);
+  flyToAndLoad({
+    center: [place.longitude, place.latitude],
+    zoom,
+    pitch,
+    bearing: -18,
+    duration,
+    essential: true
+  });
+  if (announce) showToast(`Showing ${place.name}.`);
+}
+
+function showPlaceMarker(place) {
+  if (!state.map || !window.maplibregl) return;
+  state.placeMarker?.remove();
+
+  const marker = document.createElement('div');
+  marker.className = 'place-highlight-marker';
+  marker.setAttribute('role', 'img');
+  marker.setAttribute('aria-label', `Selected place: ${place.name}`);
+  const label = document.createElement('div');
+  label.className = 'place-highlight-label';
+  label.title = place.name;
+  const name = document.createElement('strong');
+  name.textContent = place.name;
+  label.append(name);
+  if (place.detail) {
+    const detail = document.createElement('span');
+    detail.textContent = place.detail;
+    label.append(detail);
+  }
+  const stem = document.createElement('i');
+  stem.className = 'place-highlight-stem';
+  stem.setAttribute('aria-hidden', 'true');
+  const pin = document.createElement('i');
+  pin.className = 'place-highlight-pin';
+  pin.setAttribute('aria-hidden', 'true');
+  marker.append(label, stem, pin);
+  state.placeMarker = new maplibregl.Marker({
+    element: marker,
+    anchor: 'bottom',
+    offset: [0, 2],
+    pitchAlignment: 'viewport',
+    rotationAlignment: 'viewport'
+  })
+    .setLngLat([place.longitude, place.latitude])
+    .addTo(state.map);
 }
 
 function flyToAndLoad(target) {
