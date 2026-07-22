@@ -36,8 +36,9 @@ from backend.sun_planner import (
     VenueRetriever,
     load_environment_file,
     load_venues,
+    planner_venues_near,
     rank_venues_by_sun,
-    venues_near,
+    venue_preference_for_request,
 )
 
 
@@ -69,8 +70,11 @@ PLACE_SUGGESTION_MIN_REQUEST_INTERVAL_SECONDS = 0.5
 PLACE_SUGGESTION_HTTP_TIMEOUT_SECONDS = 6
 MAX_PLACE_SUGGESTIONS = 6
 PLANNER_SAMPLE_MINUTES = (0, 30, 60)
-PLANNER_BOUNDS_PADDING_DEGREES_LATITUDE = 0.007
-PLANNER_BOUNDS_PADDING_DEGREES_LONGITUDE = 0.014
+# Each buffer exceeds the 560 m maximum projected shadow length in that
+# coordinate direction, without turning a small outing request into a city-
+# scale WFS query.
+PLANNER_BOUNDS_PADDING_DEGREES_LATITUDE = 0.006
+PLANNER_BOUNDS_PADDING_DEGREES_LONGITUDE = 0.011
 
 # This bounds check keeps the City of Helsinki building query firmly scoped to
 # the product's Helsinki use case. It is intentionally broader than city centre.
@@ -208,8 +212,6 @@ class BuildingStore:
         try:
             try:
                 features = fetch_helsinki_buildings(bounds)
-                if len(features) < 4:
-                    raise ValueError("Helsinki WFS returned too few building footprints")
                 source = "helsinki-wfs"
                 ttl_seconds = 12 * 60 * 60
             except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
@@ -726,6 +728,15 @@ def fetch_helsinki_buildings(bounds: Bounds) -> list[dict[str, Any]]:
     The browser normally uses prebuilt vector tiles. This endpoint keeps the
     Python API useful as a compact fallback without relying on Overpass.
     """
+    # The source layer is mixed geometry. A plain BBOX request can spend its
+    # entire response limit on stair and outline lines before returning a
+    # building polygon. GeoServer does not accept bbox and cql_filter together,
+    # so keep the spatial constraint inside one CQL expression.
+    polygon_filter = (
+        f"BBOX(geom,{bounds.west:.5f},{bounds.south:.5f},"
+        f"{bounds.east:.5f},{bounds.north:.5f},'EPSG:4326') "
+        "AND (geometryType(geom) = 'Polygon' OR geometryType(geom) = 'MultiPolygon')"
+    )
     query = urlencode(
         {
             "service": "WFS",
@@ -734,10 +745,7 @@ def fetch_helsinki_buildings(bounds: Bounds) -> list[dict[str, Any]]:
             "typeNames": HELSINKI_WFS_BUILDINGS_LAYER,
             "outputFormat": "application/json",
             "srsName": "EPSG:4326",
-            "bbox": (
-                f"{bounds.west:.5f},{bounds.south:.5f},"
-                f"{bounds.east:.5f},{bounds.north:.5f},EPSG:4326"
-            ),
+            "CQL_FILTER": polygon_filter,
             "count": str(MAX_BUILDINGS_PER_REQUEST),
         }
     )
@@ -1295,9 +1303,22 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail=f"I could not find {intent.anchor_query} in Helsinki")
         anchor = place_results[0]
 
-    nearby_venues = venues_near(venue_catalogue, anchor["latitude"], anchor["longitude"])
+    venue_preference = venue_preference_for_request(request.message, intent.venue_kind)
+    nearby_venues = planner_venues_near(
+        venue_catalogue,
+        anchor["latitude"],
+        anchor["longitude"],
+        preference=venue_preference,
+    )
     if not nearby_venues:
-        raise HTTPException(status_code=422, detail="No curated terrace or café is within 2 km of that spot yet")
+        category_label = {
+            "beer": "bar",
+            "wine": "wine bar",
+            "bar": "bar",
+            "cafe": "café",
+            "terrace": "terrace",
+        }.get(venue_preference, "terrace or café")
+        raise HTTPException(status_code=422, detail=f"No curated {category_label} is within 2 km of that spot yet")
 
     bounds = planner_bounds(
         anchor["latitude"],
@@ -1305,7 +1326,9 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
         [(venue.latitude, venue.longitude) for venue, _ in nearby_venues],
     )
     building_result, condition_data = await asyncio.gather(
-        asyncio.to_thread(building_store.get, bounds),
+        # A planner submission is deliberate. Retry a short-lived WFS fallback
+        # instead of making the person wait for its 15-second failure cache.
+        asyncio.to_thread(building_store.get, bounds, retry_failed=True),
         current_conditions(planned_time, live=True),
     )
     building_features, building_source, building_cached = building_result
@@ -1328,7 +1351,13 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
     except OllamaUnavailableError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
-    documents_by_id = {document.venue_id: document for document in retrieved_documents}
+    recommendation_ids = [recommendation["venue"]["id"] for recommendation in recommendations]
+    recommendation_id_set = set(recommendation_ids)
+    documents_by_id = {
+        document.venue_id: document
+        for document in retrieved_documents
+        if document.venue_id in recommendation_id_set
+    }
     for recommendation in recommendations:
         venue = recommendation["venue"]
         if venue["id"] not in documents_by_id:
@@ -1345,6 +1374,7 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
                 source_label=venue["source"]["label"],
                 source_url=venue["source"]["url"],
             )
+    source_documents = [documents_by_id[venue_id] for venue_id in recommendation_ids if venue_id in documents_by_id]
     response_facts = planner_language_facts(
         anchor=anchor,
         planned_time=planned_time,
@@ -1365,7 +1395,7 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
                 assistant_client.write_answer,
                 request=request.message,
                 facts=response_facts,
-                retrieved_documents=list(documents_by_id.values()),
+                retrieved_documents=source_documents,
             )
         except OllamaUnavailableError:
             answer = deterministic_plan_answer(
@@ -1382,6 +1412,7 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
             "at": planned_time.isoformat(),
             "window_minutes": 60,
             "venue_kind": intent.venue_kind,
+            "venue_preference": venue_preference,
         },
         "recommendations": recommendations,
         "weather": planner_weather_summary(condition_data["weather"]),
@@ -1391,13 +1422,14 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
                 "score": document.score,
                 "source": {"label": document.source_label, "url": document.source_url},
             }
-            for document in retrieved_documents
+            for document in source_documents
         ],
         "meta": {
             "building_source": building_source,
             "building_cached": building_cached,
             "building_geometry_available": building_geometry_available,
             "catalogue_size": len(venue_catalogue),
+            "candidate_count": len(nearby_venues),
         },
     }
 

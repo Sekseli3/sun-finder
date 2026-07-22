@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 from backend import main
-from backend.sun_planner import AssistantSettings, SunPlanIntent, SunPlanRequest
+from backend.sun_planner import AssistantSettings, RetrievedVenueDocument, SunPlanIntent, SunPlanRequest
 
 
 class SunPlanApiTests(unittest.IsolatedAsyncioTestCase):
@@ -22,7 +22,7 @@ class SunPlanApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_plan_uses_deterministic_candidates_and_returns_local_model_copy(self) -> None:
         request = SunPlanRequest(
-            message="Outdoor coffee near Eerikinkatu tomorrow after work",
+            message="I want a cold lager near Eerikinkatu",
             map_latitude=60.1657789,
             map_longitude=24.9313873,
             selected_time=datetime(2026, 7, 22, 15, 0, tzinfo=UTC),
@@ -42,16 +42,30 @@ class SunPlanApiTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 main.assistant_client,
                 "structured_intent",
-                return_value=SunPlanIntent(anchor_query=None, requested_time=None),
+                return_value=SunPlanIntent(anchor_query=None, requested_time=None, venue_kind="bar"),
             ),
             patch.object(main.building_store, "get", return_value=(main.FALLBACK_FEATURES[:4], "helsinki-wfs", True)),
             patch("backend.main.current_conditions", new=AsyncMock(return_value={"weather": weather})),
-            patch.object(main.venue_retriever, "search", return_value=[]),
-            patch.object(main.assistant_client, "write_answer", return_value="Try the top result."),
+            patch.object(
+                main.venue_retriever,
+                "search",
+                return_value=[
+                    RetrievedVenueDocument(
+                        venue_id="way-bakery",
+                        score=1.0,
+                        text="Way Bakery",
+                        source_label="Example",
+                        source_url="https://example.test/way",
+                    )
+                ],
+            ),
+            patch.object(main.assistant_client, "write_answer", return_value="Try the top result.") as writer,
         ):
             payload = await main.sun_plans(request)
 
         self.assertEqual(payload["answer"], "Try the top result.")
+        self.assertNotIn("way-bakery", [document.venue_id for document in writer.call_args.kwargs["retrieved_documents"]])
+        self.assertTrue(all("wine" not in item["venue"]["kind"] for item in payload["recommendations"]))
         self.assertEqual(payload["request"]["window_minutes"], 60)
         self.assertTrue(payload["meta"]["building_geometry_available"])
         self.assertGreaterEqual(len(payload["recommendations"]), 1)
@@ -82,7 +96,7 @@ class SunPlanApiTests(unittest.IsolatedAsyncioTestCase):
                 "structured_intent",
                 return_value=SunPlanIntent(anchor_query=None, requested_time=None, venue_kind="bar"),
             ),
-            patch.object(main.building_store, "get", return_value=(main.FALLBACK_FEATURES[:4], "fallback", False)),
+            patch.object(main.building_store, "get", return_value=(main.FALLBACK_FEATURES[:4], "fallback", False)) as building_get,
             patch("backend.main.current_conditions", new=AsyncMock(return_value={"weather": weather})),
             patch.object(main.venue_retriever, "search", return_value=[]),
             patch.object(main.assistant_client, "write_answer") as writer,
@@ -90,11 +104,14 @@ class SunPlanApiTests(unittest.IsolatedAsyncioTestCase):
             payload = await main.sun_plans(request)
 
         writer.assert_not_called()
+        self.assertTrue(building_get.call_args.kwargs["retry_failed"])
         self.assertFalse(payload["meta"]["building_geometry_available"])
         self.assertIn("closest curated choices", payload["answer"])
         self.assertIn("71%", payload["answer"])
         self.assertNotIn("96%", payload["answer"])
         self.assertEqual(payload["recommendations"][0]["ranking_basis"], "distance only because building data is unavailable")
+        self.assertEqual(payload["request"]["venue_preference"], "beer")
+        self.assertTrue(all("wine" not in item["venue"]["kind"] for item in payload["recommendations"]))
 
     def test_language_facts_do_not_present_cloud_cover_as_a_venue_score(self) -> None:
         facts = main.planner_language_facts(

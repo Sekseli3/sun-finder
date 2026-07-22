@@ -477,7 +477,7 @@ function renderSunPlan(payload) {
   const weather = payload?.weather || {};
   const geometryAvailable = payload?.meta?.building_geometry_available === true;
   elements['sun-planner-note'].textContent = !geometryAvailable
-    ? 'Building data was unavailable, so these are nearby choices instead of confirmed sun spots.'
+    ? 'The city building check did not complete for this area, so this list is by nearby distance only. Press Plan it again to retry the building check.'
     : weather.applies_to_selected_time
       ? 'The weather number is a city-wide estimate for an open point. Trees and small local clouds are not modelled.'
       : 'For this future time, the score is clear-sky potential. It is not a local weather forecast.';

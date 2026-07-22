@@ -11,8 +11,10 @@ from backend.sun_planner import (
     VenueRetriever,
     cosine_similarity,
     load_venues,
+    planner_venues_near,
     point_in_feature,
     rank_venues_by_sun,
+    venue_preference_for_request,
     venues_near,
 )
 
@@ -81,6 +83,29 @@ class SunPlannerTests(unittest.TestCase):
 
         self.assertEqual([venue.name for venue, _ in nearby], ["Sunny Cafe", "Shaded Bar"])
         self.assertLess(nearby[0][1], nearby[1][1])
+
+    def test_cold_lager_prefers_local_beer_bars_not_cafes_or_wine_bars(self) -> None:
+        wine_bar = Venue(
+            venue_id="wine-bar",
+            name="Wine Bar",
+            area="Kamppi",
+            kind="bakery and wine bar",
+            latitude=60.1701,
+            longitude=24.9401,
+            terrace_note="Outdoor point.",
+            source_label="Example",
+            source_url="https://example.test/wine",
+        )
+        preference = venue_preference_for_request("All I want is a cold lager", "terrace_or_cafe")
+        nearby = planner_venues_near(
+            (*self.venues, wine_bar),
+            60.1700,
+            24.9400,
+            preference=preference,
+        )
+
+        self.assertEqual(preference, "beer")
+        self.assertEqual([venue.name for venue, _ in nearby], ["Shaded Bar"])
 
     def test_ranker_prefers_unshaded_terrace_over_nearer_shaded_one(self) -> None:
         shadow = {

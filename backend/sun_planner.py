@@ -26,6 +26,8 @@ DEFAULT_CHAT_MODEL = "qwen3:8b"
 DEFAULT_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 DEFAULT_ASSISTANT_TIMEOUT_SECONDS = 45
 DEFAULT_VENUE_RADIUS_METERS = 2_000
+PLANNER_LOCAL_VENUE_RADIUS_METERS = 1_000
+PLANNER_VENUE_LIMIT = 6
 EARTH_RADIUS_METERS = 6_371_000
 
 
@@ -168,6 +170,9 @@ class OllamaClient:
                 "Interpret after work as 18:00 Helsinki time.",
                 "Use anchor_query only for a place, area, or address explicitly mentioned.",
                 "For here, nearby, or no location, leave anchor_query null.",
+                "Use venue_kind 'bar' for beer, lager, wine, cocktails, or other drinking requests.",
+                "Use venue_kind 'cafe' for coffee, tea, cake, or bakery requests.",
+                "Use venue_kind 'terrace_or_cafe' when the venue type is not clear.",
                 "Return only JSON matching this schema:",
                 json.dumps(schema, ensure_ascii=False),
                 "Request:",
@@ -215,6 +220,7 @@ class OllamaClient:
                 "A direct-sun probability is city-wide, covers the next hour, and only applies to an open point.",
                 "If building data is unavailable, do not call any venue sunny or shaded. Say the choices are nearby, not confirmed sun spots.",
                 "Do not infer outdoor seating from a venue name. The outdoor note is the only source for that claim.",
+                "Only recommend venues listed in the deterministic facts. Retrieved notes support those venues only.",
                 "Give the top recommendation first and keep the answer under 130 words.",
                 "Original request:",
                 request,
@@ -375,6 +381,81 @@ def venues_near(venues: Iterable[Venue], latitude: float, longitude: float, *, r
         ((venue, distance) for venue, distance in nearby if distance <= radius_meters),
         key=lambda item: item[1],
     )
+
+
+def venue_preference_for_request(message: str, model_venue_kind: str) -> str:
+    """Choose a small deterministic venue filter from an outing request.
+
+    The model still extracts the broader intent, but a direct request for a
+    cold lager should never drift into a nearby coffee shop just because its
+    vector note happened to be similar.
+    """
+    words = request_words(message)
+    if words & {"beer", "lager", "ale", "pint", "brewery", "olut", "bisse", "kalja"}:
+        return "beer"
+    if words & {"wine", "viini"}:
+        return "wine"
+    if words & {"cocktail", "cocktails", "drink", "drinks", "bar", "pub"}:
+        return "bar"
+    if words & {"coffee", "cafe", "café", "kahvi", "espresso", "latte", "tea", "cake", "bakery"}:
+        return "cafe"
+    if words & {"terrace", "patio", "outdoor", "outside", "ulko", "terassi"}:
+        return "terrace"
+
+    model_words = request_words(model_venue_kind)
+    if "bar" in model_words:
+        return "bar"
+    if "cafe" in model_words or "café" in model_words:
+        return "cafe"
+    if "terrace" in model_words:
+        return "terrace"
+    return "any"
+
+
+def planner_venues_near(
+    venues: Iterable[Venue],
+    latitude: float,
+    longitude: float,
+    *,
+    preference: str,
+) -> list[tuple[Venue, float]]:
+    """Return a compact, relevant local set for a planner shadow check.
+
+    The former planner envelope included every catalogue item within 2 km.
+    In central Helsinki that became a multi-square-kilometre building request.
+    Start with genuinely local choices, then expand only when the catalogue is
+    sparse around the selected map point.
+    """
+    nearby = venues_near(venues, latitude, longitude)
+    matching = [item for item in nearby if venue_matches_preference(item[0], preference)]
+    if preference != "any" and not matching:
+        return []
+    candidates = matching if preference != "any" else nearby
+    local = [item for item in candidates if item[1] <= PLANNER_LOCAL_VENUE_RADIUS_METERS]
+    return (local or candidates)[:PLANNER_VENUE_LIMIT]
+
+
+def venue_matches_preference(venue: Venue, preference: str) -> bool:
+    kind_words = request_words(venue.kind)
+    is_bar = "bar" in kind_words
+    is_brewery = "brewery" in kind_words
+    if preference == "beer":
+        # A wine bar is a useful match for a wine request, but its catalogue
+        # label alone does not justify presenting it as a place for lager.
+        return is_brewery or (is_bar and "wine" not in kind_words)
+    if preference == "wine":
+        return "wine" in kind_words or is_bar
+    if preference == "bar":
+        return is_bar or is_brewery
+    if preference == "cafe":
+        return "cafe" in kind_words or "café" in kind_words or "bakery" in kind_words
+    if preference == "terrace":
+        return "terrace" in kind_words
+    return True
+
+
+def request_words(value: str) -> set[str]:
+    return set("".join(character if character.isalnum() else " " for character in value.casefold()).split())
 
 
 def rank_venues_by_sun(
