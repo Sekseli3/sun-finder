@@ -166,8 +166,27 @@
           <p class="data-note" id="data-note">Search a spot or use a quick place. Building tiles follow the visible map.</p>
         </section>
 
+        <section class="sun-planner panel" id="sun-planner" aria-label="Plan a sunny outing" hidden>
+          <button class="panel-close sun-planner-close" id="close-sun-planner" type="button" title="Hide outing planner" aria-label="Hide outing planner">×</button>
+          <p class="eyebrow">LOCAL OUTING PLANNER</p>
+          <h2>Plan a sunny stop</h2>
+          <p class="sun-planner-intro">Try “Outdoor coffee near Kamppi tomorrow after work”. It uses your selected map time too.</p>
+          <form id="sun-planner-form" class="sun-planner-form">
+            <label class="sr-only" for="sun-planner-prompt">Describe your Helsinki sun outing</label>
+            <textarea id="sun-planner-prompt" maxlength="500" rows="3" placeholder="Coffee near Eerikinkatu tomorrow after work"></textarea>
+            <button id="sun-planner-submit" type="submit">Plan it</button>
+          </form>
+          <p id="sun-planner-status" class="sun-planner-status" aria-live="polite"></p>
+          <div id="sun-planner-response" class="sun-planner-response" hidden>
+            <p id="sun-planner-answer" class="sun-planner-answer"></p>
+            <div id="sun-planner-results" class="sun-planner-results"></div>
+            <p id="sun-planner-note" class="sun-planner-note"></p>
+          </div>
+        </section>
+
         <button class="panel-reopen control-panel-reopen" id="open-control-panel" type="button" hidden>Show sun controls</button>
         <button class="panel-reopen place-panel-reopen" id="open-place-panel" type="button" hidden>Search places</button>
+        <button class="panel-reopen sun-planner-reopen" id="open-sun-planner" type="button" hidden>Plan a sunny outing</button>
 
         <section class="inspector panel" id="inspector" aria-live="polite" hidden>
           <button class="inspector-close" id="close-inspector" type="button" aria-label="Close building details">×</button>

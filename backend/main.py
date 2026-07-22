@@ -27,6 +27,18 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.nowcast import direct_sun_nowcast, unavailable_direct_sun_nowcast
+from backend.sun_planner import (
+    AssistantSettings,
+    OllamaClient,
+    OllamaUnavailableError,
+    RetrievedVenueDocument,
+    SunPlanRequest,
+    VenueRetriever,
+    load_environment_file,
+    load_venues,
+    rank_venues_by_sun,
+    venues_near,
+)
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -56,12 +68,27 @@ FAILED_PLACE_SUGGESTION_CACHE_SECONDS = 60
 PLACE_SUGGESTION_MIN_REQUEST_INTERVAL_SECONDS = 0.5
 PLACE_SUGGESTION_HTTP_TIMEOUT_SECONDS = 6
 MAX_PLACE_SUGGESTIONS = 6
+PLANNER_SAMPLE_MINUTES = (0, 30, 60)
+PLANNER_BOUNDS_PADDING_DEGREES_LATITUDE = 0.007
+PLANNER_BOUNDS_PADDING_DEGREES_LONGITUDE = 0.014
 
 # This bounds check keeps the City of Helsinki building query firmly scoped to
 # the product's Helsinki use case. It is intentionally broader than city centre.
 HELSINKI_REGION = (59.95, 24.60, 60.38, 25.40)  # south, west, north, east
 MAX_QUERY_LATITUDE_SPAN = 0.09
 MAX_QUERY_LONGITUDE_SPAN = 0.14
+VENUE_CATALOGUE_PATH = APP_ROOT / "backend" / "venue_data" / "helsinki_terraces.json"
+LOCAL_VENUE_INDEX_PATH = APP_ROOT / ".sunfinder" / "venue_index.json"
+
+load_environment_file(APP_ROOT / ".env")
+assistant_settings = AssistantSettings.from_environment()
+assistant_client = OllamaClient(assistant_settings)
+venue_catalogue = load_venues(VENUE_CATALOGUE_PATH)
+venue_retriever = VenueRetriever(
+    venues=venue_catalogue,
+    index_path=LOCAL_VENUE_INDEX_PATH,
+    client=assistant_client,
+)
 
 
 @dataclass(frozen=True)
@@ -550,6 +577,67 @@ def nominatim_result_name(item: dict[str, Any]) -> tuple[str, str]:
 def is_in_helsinki_region(latitude: float, longitude: float) -> bool:
     south, west, north, east = HELSINKI_REGION
     return south <= latitude <= north and west <= longitude <= east
+
+
+def planner_bounds(latitude: float, longitude: float, candidate_coordinates: list[tuple[float, float]]) -> Bounds:
+    """Return one WFS-safe box around the anchor and the nearby terrace points."""
+    latitudes = [latitude, *(candidate_latitude for candidate_latitude, _ in candidate_coordinates)]
+    longitudes = [longitude, *(candidate_longitude for _, candidate_longitude in candidate_coordinates)]
+    region_south, region_west, region_north, region_east = HELSINKI_REGION
+    return Bounds(
+        south=max(region_south, min(latitudes) - PLANNER_BOUNDS_PADDING_DEGREES_LATITUDE),
+        west=max(region_west, min(longitudes) - PLANNER_BOUNDS_PADDING_DEGREES_LONGITUDE),
+        north=min(region_north, max(latitudes) + PLANNER_BOUNDS_PADDING_DEGREES_LATITUDE),
+        east=min(region_east, max(longitudes) + PLANNER_BOUNDS_PADDING_DEGREES_LONGITUDE),
+    )
+
+
+def planner_timestamp(timestamp: datetime) -> datetime:
+    """Interpret a bare LLM time as Helsinki wall time, then use UTC internally."""
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=HELSINKI_TIME_ZONE)
+    return timestamp.astimezone(UTC)
+
+
+def planner_weather_summary(weather: dict[str, Any]) -> dict[str, Any]:
+    nowcast = weather.get("nowcast") if isinstance(weather.get("nowcast"), dict) else {}
+    uncertainty = nowcast.get("uncertainty") if isinstance(nowcast.get("uncertainty"), dict) else {}
+    return {
+        "applies_to_selected_time": bool(weather.get("applies_to_selected_time")),
+        "available": bool(weather.get("available")),
+        "label": weather.get("label"),
+        "cloud_cover": weather.get("cloud_cover"),
+        "direct_sun_probability": nowcast.get("probability"),
+        "direct_sun_range": {
+            "lower": uncertainty.get("lower"),
+            "upper": uncertainty.get("upper"),
+        },
+        "note": weather.get("note"),
+    }
+
+
+def deterministic_plan_answer(
+    recommendations: list[dict[str, Any]],
+    *,
+    building_geometry_available: bool,
+    weather: dict[str, Any],
+) -> str:
+    """Keep the planner useful if its second local model call fails."""
+    if not recommendations:
+        return "I could not find a curated terrace or café close to that spot. Try another Helsinki area."
+    names = ", ".join(recommendation["venue"]["name"] for recommendation in recommendations)
+    lead = recommendations[0]
+    geometry_note = (
+        f"{lead['venue']['name']} looks best for projected building sun over the next hour."
+        if building_geometry_available
+        else "Building data is unavailable, so these are nearby choices rather than confirmed sun spots."
+    )
+    weather_note = (
+        f" The live Helsinki direct sun estimate is {weather['nowcast']['probability']}% for an open point."
+        if weather.get("applies_to_selected_time") and weather.get("nowcast", {}).get("available")
+        else " This is clear sky potential for the selected time, not a local weather forecast."
+    )
+    return f"{geometry_note} Other nearby picks are {names}.{weather_note}"
 
 
 def parse_bounds(raw_bounds: str) -> Bounds:
@@ -1088,6 +1176,181 @@ async def conditions(
 ) -> dict[str, Any]:
     """Return current sky state without waiting for building footprints."""
     return await current_conditions(parse_timestamp(at), live)
+
+
+@app.get("/api/sun-planner/status")
+async def sun_planner_status() -> dict[str, Any]:
+    """Report whether the optional local Ollama planner is ready for this process."""
+    if not assistant_settings.enabled:
+        return {
+            "enabled": False,
+            "ready": False,
+            "reason": "The local outing planner is disabled on this server.",
+        }
+    try:
+        installed_models = await asyncio.to_thread(assistant_client.available_models)
+    except OllamaUnavailableError:
+        return {
+            "enabled": True,
+            "ready": False,
+            "reason": "Start Ollama locally to use the outing planner.",
+        }
+    required_models = (assistant_settings.chat_model, assistant_settings.embedding_model)
+    missing_models = [model for model in required_models if model not in installed_models]
+    if missing_models:
+        return {
+            "enabled": True,
+            "ready": False,
+            "reason": "Pull the local planner models before using it.",
+            "missing_models": missing_models,
+        }
+    return {
+        "enabled": True,
+        "ready": True,
+        "catalogue_size": len(venue_catalogue),
+        "chat_model": assistant_settings.chat_model,
+        "embedding_model": assistant_settings.embedding_model,
+    }
+
+
+@app.post("/api/sun-plans")
+async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
+    """Recommend nearby curated terraces using local LLM parsing and map geometry."""
+    if not assistant_settings.enabled:
+        raise HTTPException(status_code=404, detail="The local outing planner is disabled on this server")
+
+    status = await sun_planner_status()
+    if not status["ready"]:
+        raise HTTPException(status_code=503, detail=status["reason"])
+
+    selected_time = planner_timestamp(request.selected_time)
+    if not is_in_helsinki_region(request.map_latitude, request.map_longitude):
+        raise HTTPException(status_code=422, detail="Choose a point in the Helsinki map before planning an outing")
+
+    try:
+        intent = await asyncio.to_thread(
+            assistant_client.structured_intent,
+            message=request.message,
+            selected_time=selected_time.astimezone(HELSINKI_TIME_ZONE),
+            current_time=datetime.now(HELSINKI_TIME_ZONE),
+        )
+    except OllamaUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    planned_time = planner_timestamp(intent.requested_time or selected_time)
+    anchor = {
+        "name": "Current map view",
+        "detail": "Map centre",
+        "latitude": request.map_latitude,
+        "longitude": request.map_longitude,
+    }
+    if intent.anchor_query:
+        place_results, place_source, _ = await asyncio.to_thread(place_search_store.get, intent.anchor_query)
+        if not place_results:
+            if place_source == "unavailable":
+                raise HTTPException(status_code=503, detail="Place search is unavailable. Try again shortly.")
+            raise HTTPException(status_code=422, detail=f"I could not find {intent.anchor_query} in Helsinki")
+        anchor = place_results[0]
+
+    nearby_venues = venues_near(venue_catalogue, anchor["latitude"], anchor["longitude"])
+    if not nearby_venues:
+        raise HTTPException(status_code=422, detail="No curated terrace or café is within 2 km of that spot yet")
+
+    bounds = planner_bounds(
+        anchor["latitude"],
+        anchor["longitude"],
+        [(venue.latitude, venue.longitude) for venue, _ in nearby_venues],
+    )
+    building_result, condition_data = await asyncio.gather(
+        asyncio.to_thread(building_store.get, bounds),
+        current_conditions(planned_time, live=True),
+    )
+    building_features, building_source, building_cached = building_result
+    building_geometry_available = building_source == "helsinki-wfs"
+    shadow_samples: list[tuple[datetime, list[dict[str, Any]], bool]] = []
+    for minutes_ahead in PLANNER_SAMPLE_MINUTES:
+        sample_time = planned_time + timedelta(minutes=minutes_ahead)
+        solar = solar_position(sample_time)
+        daylight = solar["altitude"] > 0
+        shadows = create_shadows(building_features, solar) if daylight and building_geometry_available else []
+        shadow_samples.append((sample_time, shadows, daylight))
+
+    recommendations = rank_venues_by_sun(
+        nearby_venues,
+        shadow_samples,
+        building_geometry_available=building_geometry_available,
+    )
+    try:
+        retrieved_documents = await asyncio.to_thread(venue_retriever.search, request.message)
+    except OllamaUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    documents_by_id = {document.venue_id: document for document in retrieved_documents}
+    for recommendation in recommendations:
+        venue = recommendation["venue"]
+        if venue["id"] not in documents_by_id:
+            documents_by_id[venue["id"]] = RetrievedVenueDocument(
+                venue_id=venue["id"],
+                score=1.0,
+                text="\n".join(
+                    (
+                        venue["name"],
+                        f"Area: {venue['area']}",
+                        f"Outdoor note: {venue['terrace_note']}",
+                    )
+                ),
+                source_label=venue["source"]["label"],
+                source_url=venue["source"]["url"],
+            )
+    response_facts = {
+        "anchor": anchor,
+        "planned_time": planned_time.isoformat(),
+        "window_minutes": 60,
+        "building_geometry_available": building_geometry_available,
+        "building_source": building_source,
+        "weather": planner_weather_summary(condition_data["weather"]),
+        "recommendations": recommendations,
+    }
+    try:
+        answer = await asyncio.to_thread(
+            assistant_client.write_answer,
+            request=request.message,
+            facts=response_facts,
+            retrieved_documents=list(documents_by_id.values()),
+        )
+    except OllamaUnavailableError:
+        answer = deterministic_plan_answer(
+            recommendations,
+            building_geometry_available=building_geometry_available,
+            weather=condition_data["weather"],
+        )
+
+    return {
+        "answer": answer,
+        "request": {
+            "message": request.message,
+            "anchor": anchor,
+            "at": planned_time.isoformat(),
+            "window_minutes": 60,
+            "venue_kind": intent.venue_kind,
+        },
+        "recommendations": recommendations,
+        "weather": planner_weather_summary(condition_data["weather"]),
+        "retrieved_sources": [
+            {
+                "venue_id": document.venue_id,
+                "score": document.score,
+                "source": {"label": document.source_label, "url": document.source_url},
+            }
+            for document in retrieved_documents
+        ],
+        "meta": {
+            "building_source": building_source,
+            "building_cached": building_cached,
+            "building_geometry_available": building_geometry_available,
+            "catalogue_size": len(venue_catalogue),
+        },
+    }
 
 
 @app.get("/api/places")

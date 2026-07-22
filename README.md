@@ -27,6 +27,39 @@ Open [http://localhost:4173](http://localhost:4173).
 
 `make install`, `make run`, and `make check` provide the same common actions.
 
+## Local LLM and RAG planner
+
+The optional **Plan a sunny outing** tool is a local learning project. It does
+not run on the public Render deployment and it does not need an API key.
+
+It uses [Ollama](https://ollama.com/) on your computer with `qwen3:8b` for
+language and `qwen3-embedding:0.6b` for retrieval. A 16 GB NVIDIA card is a
+comfortable fit for this pair. Start by installing Ollama, then run:
+
+```sh
+make assistant-setup
+cp .env.example .env
+make assistant-index
+make assistant-run
+```
+
+Open `http://localhost:4173`. The **Plan a sunny outing** button appears only
+when the local assistant is enabled. It can handle a request such as
+“Outdoor coffee near Kamppi tomorrow after work” and also uses the current map
+centre and selected map time.
+
+The first index is intentionally simple. It embeds a small curated Helsinki
+terrace and café catalogue, saves vectors in ignored `.sunfinder/` files, and
+uses cosine similarity to retrieve notes for the answer. No vector database is
+needed yet.
+
+The LLM parses the request and writes a short answer. Python ranks the venues
+from terrace coordinates, nearby building shadows at now, +30 minutes, and
++60 minutes, plus distance. The live weather estimate is city wide and only
+applies close to now. Future plans are marked as clear-sky potential. The seed
+catalogue has approximate outdoor points and source links, so always check
+current opening and terrace availability before travelling.
+
 ## How it works
 
 - The time control uses the `Europe/Helsinki` time zone, including daylight
@@ -44,6 +77,8 @@ Open [http://localhost:4173](http://localhost:4173).
 - `GET /api/places` resolves a submitted Helsinki venue, landmark, or address.
   It uses cached OpenStreetMap Nominatim search with a one-request-per-second
   server-side gate.
+- `GET /api/sun-planner/status` reports whether the local Ollama planner is
+  available. `POST /api/sun-plans` only works when it is enabled locally.
 - `GET /api/scene` remains available for a complete server-side scene response.
 - The backend calculates sun direction in the `Europe/Helsinki` time zone,
   including daylight-saving transitions.

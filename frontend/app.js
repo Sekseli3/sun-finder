@@ -62,6 +62,9 @@ const state = {
   placeSuggestionAbortController: null,
   placeSuggestionRequestId: 0,
   placeSuggestionTimer: null,
+  sunPlannerStatus: null,
+  sunPlannerAbortController: null,
+  sunPlannerRequestId: 0,
   conditionsAbortController: null,
   conditionsRequestId: 0,
   mapMoveRequestId: 0
@@ -80,6 +83,7 @@ function initialise() {
     'weather-callout', 'weather-glyph', 'weather-title', 'weather-detail', 'clear-sky-toggle',
     'nowcast-control', 'nowcast-toggle', 'nowcast-info', 'nowcast-dialog', 'nowcast-range', 'close-nowcast', 'legend-shadow-label',
     'header-status', 'place-panel', 'close-place-panel', 'open-place-panel', 'place-search-form', 'place-search', 'place-search-submit', 'place-search-results', 'place-select', 'load-buildings', 'building-status', 'data-note',
+    'sun-planner', 'close-sun-planner', 'open-sun-planner', 'sun-planner-form', 'sun-planner-prompt', 'sun-planner-submit', 'sun-planner-status', 'sun-planner-response', 'sun-planner-answer', 'sun-planner-results', 'sun-planner-note',
     'map-loading', 'map-loading-title', 'map-loading-detail', 'inspector', 'inspector-title',
     'inspector-detail', 'close-inspector', 'locate-button', 'about-button', 'about-dialog',
     'close-about', 'toast'
@@ -89,6 +93,7 @@ function initialise() {
   syncInputsFromDate();
   initialiseMap();
   scheduleLiveRefresh();
+  loadSunPlannerStatus();
 }
 
 function initialiseMap() {
@@ -262,6 +267,9 @@ function wireControls() {
       hidePlaceSearchResults();
     }
   });
+  elements['sun-planner-form'].addEventListener('submit', requestSunPlan);
+  elements['close-sun-planner'].addEventListener('click', () => setSunPlannerVisible(false));
+  elements['open-sun-planner'].addEventListener('click', () => setSunPlannerVisible(true));
   elements['place-select'].addEventListener('change', () => {
     const [lat, lng, zoom, pitch] = elements['place-select'].value.split(',').map(Number);
     if (!state.map) return;
@@ -333,6 +341,166 @@ async function searchPlaces(event) {
   } finally {
     if (requestId === state.placeSearchRequestId) setPlaceSearchLoading(false);
   }
+}
+
+async function loadSunPlannerStatus() {
+  try {
+    const response = await fetch('/api/sun-planner/status');
+    const payload = await response.json();
+    if (!response.ok) throw new Error(`The API returned ${response.status}`);
+    state.sunPlannerStatus = payload;
+    elements['open-sun-planner'].hidden = !payload.enabled;
+    if (!payload.enabled) {
+      setSunPlannerVisible(false);
+      return;
+    }
+    setSunPlannerStatus(payload.ready
+      ? 'Local Ollama planner is ready.'
+      : String(payload.reason || 'Local planner is not ready yet.'), payload.ready ? 'ready' : 'waiting');
+  } catch (error) {
+    console.info('Local sun planner is not available on this server.', error);
+    state.sunPlannerStatus = { enabled: false, ready: false };
+    elements['open-sun-planner'].hidden = true;
+    setSunPlannerVisible(false);
+  }
+}
+
+async function requestSunPlan(event) {
+  event.preventDefault();
+  const message = elements['sun-planner-prompt'].value.trim();
+  if (message.length < 2) {
+    setSunPlannerStatus('Tell me where and when you would like to sit outside.', 'waiting');
+    elements['sun-planner-prompt'].focus();
+    return;
+  }
+  if (!state.sunPlannerStatus?.ready) {
+    setSunPlannerStatus(String(state.sunPlannerStatus?.reason || 'Start Ollama and pull the planner models first.'), 'waiting');
+    return;
+  }
+  const center = state.map?.getCenter();
+  if (!center) {
+    setSunPlannerStatus('The map is still loading. Try again in a moment.', 'waiting');
+    return;
+  }
+
+  const requestId = ++state.sunPlannerRequestId;
+  state.sunPlannerAbortController?.abort();
+  state.sunPlannerAbortController = new AbortController();
+  setSunPlannerLoading(true);
+  setSunPlannerStatus('Checking nearby terraces, building shade, and local notes…', 'loading');
+
+  try {
+    const response = await fetch('/api/sun-plans', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: state.sunPlannerAbortController.signal,
+      body: JSON.stringify({
+        message,
+        map_latitude: center.lat,
+        map_longitude: center.lng,
+        selected_time: state.date.toISOString()
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || `The API returned ${response.status}`);
+    if (requestId !== state.sunPlannerRequestId) return;
+    renderSunPlan(payload);
+    setSunPlannerStatus('Plan ready. Tap a place to move the map there.', 'ready');
+  } catch (error) {
+    if (error.name === 'AbortError' || requestId !== state.sunPlannerRequestId) return;
+    console.warn('Sun planner failed', error);
+    setSunPlannerStatus(error.message || 'Could not make a sun plan. Try again shortly.', 'error');
+  } finally {
+    if (requestId === state.sunPlannerRequestId) {
+      setSunPlannerLoading(false);
+      if (state.sunPlannerAbortController?.signal.aborted === false) state.sunPlannerAbortController = null;
+    }
+  }
+}
+
+function renderSunPlan(payload) {
+  const results = Array.isArray(payload.recommendations) ? payload.recommendations : [];
+  elements['sun-planner-answer'].textContent = String(payload.answer || 'Here are the closest sunny options.');
+  const container = elements['sun-planner-results'];
+  container.replaceChildren();
+
+  results.forEach((result, index) => {
+    const venue = result?.venue;
+    if (!venue || !Number.isFinite(Number(venue.latitude)) || !Number.isFinite(Number(venue.longitude))) return;
+    const card = document.createElement('article');
+    card.className = 'sun-plan-result';
+
+    const choose = document.createElement('button');
+    choose.type = 'button';
+    choose.className = 'sun-plan-result-main';
+    choose.setAttribute('aria-label', `Show ${venue.name} on the map`);
+    const rank = document.createElement('span');
+    rank.className = 'sun-plan-rank';
+    rank.textContent = String(index + 1);
+    const copy = document.createElement('span');
+    const name = document.createElement('strong');
+    name.textContent = String(venue.name || 'Helsinki venue');
+    const detail = document.createElement('small');
+    detail.textContent = `${String(result.exposure || 'sun check unavailable')} · ${formatVenueDistance(result.distance_meters)}`;
+    copy.append(name, detail);
+    choose.append(rank, copy);
+    choose.addEventListener('click', () => {
+      moveToPlace({
+        name: String(venue.name || 'Helsinki venue'),
+        detail: String(venue.area || 'Helsinki'),
+        latitude: Number(venue.latitude),
+        longitude: Number(venue.longitude),
+        kind: String(venue.kind || 'place')
+      }, { announce: true });
+    });
+    card.append(choose);
+
+    const source = venue.source;
+    if (source?.url) {
+      const link = document.createElement('a');
+      link.href = String(source.url);
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      link.textContent = 'Place source';
+      card.append(link);
+    }
+    container.append(card);
+  });
+
+  const plannedTime = new Date(payload?.request?.at);
+  if (Number.isFinite(plannedTime.getTime())) {
+    state.date = plannedTime;
+    setLive(false);
+    syncInputsFromDate();
+    refreshScene({ quiet: true });
+  }
+  const weather = payload?.weather || {};
+  const geometryAvailable = payload?.meta?.building_geometry_available === true;
+  elements['sun-planner-note'].textContent = !geometryAvailable
+    ? 'Building data was unavailable, so these are nearby choices instead of confirmed sun spots.'
+    : weather.applies_to_selected_time
+      ? 'The weather number is a city-wide estimate for an open point. Trees and small local clouds are not modelled.'
+      : 'For this future time, the score is clear-sky potential. It is not a local weather forecast.';
+  elements['sun-planner-response'].hidden = false;
+}
+
+function formatVenueDistance(distance) {
+  const meters = Number(distance);
+  if (!Number.isFinite(meters)) return 'nearby';
+  return meters < 1_000 ? `${Math.round(meters)} m away` : `${(meters / 1_000).toFixed(1)} km away`;
+}
+
+function setSunPlannerLoading(isLoading) {
+  const button = elements['sun-planner-submit'];
+  button.disabled = isLoading;
+  button.textContent = isLoading ? 'Planning…' : 'Plan it';
+  button.setAttribute('aria-busy', String(isLoading));
+}
+
+function setSunPlannerStatus(message, stateName = 'idle') {
+  const status = elements['sun-planner-status'];
+  status.textContent = message;
+  status.dataset.state = stateName;
 }
 
 function schedulePlaceSuggestions() {
@@ -562,6 +730,21 @@ function setPlacePanelVisible(isVisible) {
     cancelPlaceSuggestions();
     hidePlaceSearchResults();
   }
+}
+
+function setSunPlannerVisible(isVisible) {
+  const canShowPlanner = Boolean(state.sunPlannerStatus?.enabled);
+  const visible = isVisible && canShowPlanner;
+  elements['sun-planner'].hidden = !visible;
+  elements['open-sun-planner'].hidden = !canShowPlanner || visible;
+  if (!visible) {
+    state.sunPlannerAbortController?.abort();
+    return;
+  }
+  if (window.matchMedia('(max-width: 780px)').matches && !elements['place-panel'].hidden) {
+    setPlacePanelVisible(false);
+  }
+  elements['sun-planner-prompt'].focus();
 }
 
 function setLive(value) {
