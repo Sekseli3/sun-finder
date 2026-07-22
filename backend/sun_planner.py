@@ -211,7 +211,10 @@ class OllamaClient:
                 "Write a short, friendly Helsinki sun outing recommendation.",
                 "Use only the facts and retrieved venue notes below.",
                 "Do not invent opening hours, menu details, terrace size, weather, or local sun data.",
-                "Mention if the geometry is clear-sky potential or building data is limited.",
+                "Never call a ranking score a sun score or a weather probability.",
+                "A direct-sun probability is city-wide, covers the next hour, and only applies to an open point.",
+                "If building data is unavailable, do not call any venue sunny or shaded. Say the choices are nearby, not confirmed sun spots.",
+                "Do not infer outdoor seating from a venue name. The outdoor note is the only source for that claim.",
                 "Give the top recommendation first and keep the answer under 130 words.",
                 "Original request:",
                 request,
@@ -402,12 +405,22 @@ def rank_venues_by_sun(
 
         exposure_fraction = exposed_samples / daylight_samples if daylight_samples else 0.0
         distance_score = max(0.0, 1 - distance_meters / DEFAULT_VENUE_RADIUS_METERS)
-        score = 0.75 * exposure_fraction + 0.25 * distance_score if building_geometry_available else distance_score
+        ranking_score = 0.75 * exposure_fraction + 0.25 * distance_score if building_geometry_available else distance_score
+        if daylight_samples == 0:
+            ranking_basis = "distance only because the sun is below the horizon"
+        elif building_geometry_available:
+            ranking_basis = "projected building shade over the next hour and distance"
+        else:
+            ranking_basis = "distance only because building data is unavailable"
         recommendations.append(
             {
                 "venue": venue.as_public_dict(),
                 "distance_meters": round(distance_meters),
-                "sun_score": round(score * 100),
+                "ranking_score": round(ranking_score * 100),
+                "sun_coverage_percent": round(exposure_fraction * 100)
+                if building_geometry_available and daylight_samples
+                else None,
+                "ranking_basis": ranking_basis,
                 "exposure": exposure_label(
                     daylight_samples=daylight_samples,
                     exposed_samples=exposed_samples,
@@ -416,7 +429,7 @@ def rank_venues_by_sun(
                 "sample_details": sample_details,
             }
         )
-    return sorted(recommendations, key=lambda recommendation: (-recommendation["sun_score"], recommendation["distance_meters"]))[:3]
+    return sorted(recommendations, key=lambda recommendation: (-recommendation["ranking_score"], recommendation["distance_meters"]))[:3]
 
 
 def point_in_feature(longitude: float, latitude: float, feature: dict[str, Any]) -> bool:

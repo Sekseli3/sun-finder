@@ -100,6 +100,8 @@ class SunPlannerTests(unittest.TestCase):
 
         self.assertEqual(recommendations[0]["venue"]["id"], "sunny-cafe")
         self.assertEqual(recommendations[0]["exposure"], "sunny through the next hour")
+        self.assertEqual(recommendations[0]["sun_coverage_percent"], 100)
+        self.assertEqual(recommendations[0]["ranking_basis"], "projected building shade over the next hour and distance")
         self.assertEqual(recommendations[1]["exposure"], "in projected building shade")
 
     def test_ranker_marks_night_and_missing_geometry_clearly(self) -> None:
@@ -111,6 +113,8 @@ class SunPlannerTests(unittest.TestCase):
         )
 
         self.assertEqual(recommendations[0]["exposure"], "after sunset")
+        self.assertIsNone(recommendations[0]["sun_coverage_percent"])
+        self.assertEqual(recommendations[0]["ranking_basis"], "distance only because the sun is below the horizon")
         self.assertIsNone(recommendations[0]["sample_details"][0]["building_shade"])
 
     def test_point_in_feature_uses_the_shadow_polygon(self) -> None:

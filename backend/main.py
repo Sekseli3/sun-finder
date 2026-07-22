@@ -616,6 +616,49 @@ def planner_weather_summary(weather: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def planner_language_facts(
+    *,
+    anchor: dict[str, Any],
+    planned_time: datetime,
+    recommendations: list[dict[str, Any]],
+    building_geometry_available: bool,
+    building_source: str,
+    weather: dict[str, Any],
+) -> dict[str, Any]:
+    """Give the writing model only plainly labelled facts it can safely phrase."""
+    nowcast = weather.get("nowcast") if isinstance(weather.get("nowcast"), dict) else {}
+    if weather.get("applies_to_selected_time") and nowcast.get("available"):
+        weather_facts = {
+            "description": "City-wide next-hour direct-sun estimate for an open point.",
+            "direct_sun_probability": nowcast.get("probability"),
+            "interpretation": "This is an average of the forecast for now, +30 minutes, and +60 minutes. It is not a venue-specific score or a statement about the sky at one exact moment.",
+        }
+    else:
+        weather_facts = {
+            "description": "Clear-sky potential for the selected map time.",
+            "interpretation": "This is solar geometry only, not a local weather forecast.",
+        }
+    return {
+        "anchor": {key: anchor.get(key) for key in ("name", "detail", "latitude", "longitude")},
+        "planned_time": planned_time.isoformat(),
+        "window_minutes": 60,
+        "building_geometry_available": building_geometry_available,
+        "building_source": building_source,
+        "weather": weather_facts,
+        "recommendations": [
+            {
+                "name": recommendation["venue"]["name"],
+                "area": recommendation["venue"]["area"],
+                "distance_meters": recommendation["distance_meters"],
+                "exposure": recommendation["exposure"],
+                "ranking_basis": recommendation["ranking_basis"],
+                "outdoor_note": recommendation["venue"]["terrace_note"],
+            }
+            for recommendation in recommendations
+        ],
+    }
+
+
 def deterministic_plan_answer(
     recommendations: list[dict[str, Any]],
     *,
@@ -630,14 +673,14 @@ def deterministic_plan_answer(
     geometry_note = (
         f"{lead['venue']['name']} looks best for projected building sun over the next hour."
         if building_geometry_available
-        else "Building data is unavailable, so these are nearby choices rather than confirmed sun spots."
+        else "I could not load building geometry for this area, so these are the closest curated choices rather than confirmed sun spots."
     )
     weather_note = (
-        f" The live Helsinki direct sun estimate is {weather['nowcast']['probability']}% for an open point."
+        f" The city-wide next-hour direct-sun estimate is {weather['nowcast']['probability']}% for an open point, not for a specific venue."
         if weather.get("applies_to_selected_time") and weather.get("nowcast", {}).get("available")
         else " This is clear sky potential for the selected time, not a local weather forecast."
     )
-    return f"{geometry_note} Other nearby picks are {names}.{weather_note}"
+    return f"{geometry_note} Nearby choices are {names}.{weather_note}"
 
 
 def parse_bounds(raw_bounds: str) -> Bounds:
@@ -1302,28 +1345,34 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
                 source_label=venue["source"]["label"],
                 source_url=venue["source"]["url"],
             )
-    response_facts = {
-        "anchor": anchor,
-        "planned_time": planned_time.isoformat(),
-        "window_minutes": 60,
-        "building_geometry_available": building_geometry_available,
-        "building_source": building_source,
-        "weather": planner_weather_summary(condition_data["weather"]),
-        "recommendations": recommendations,
-    }
-    try:
-        answer = await asyncio.to_thread(
-            assistant_client.write_answer,
-            request=request.message,
-            facts=response_facts,
-            retrieved_documents=list(documents_by_id.values()),
-        )
-    except OllamaUnavailableError:
+    response_facts = planner_language_facts(
+        anchor=anchor,
+        planned_time=planned_time,
+        recommendations=recommendations,
+        building_geometry_available=building_geometry_available,
+        building_source=building_source,
+        weather=condition_data["weather"],
+    )
+    if not building_geometry_available:
         answer = deterministic_plan_answer(
             recommendations,
             building_geometry_available=building_geometry_available,
             weather=condition_data["weather"],
         )
+    else:
+        try:
+            answer = await asyncio.to_thread(
+                assistant_client.write_answer,
+                request=request.message,
+                facts=response_facts,
+                retrieved_documents=list(documents_by_id.values()),
+            )
+        except OllamaUnavailableError:
+            answer = deterministic_plan_answer(
+                recommendations,
+                building_geometry_available=building_geometry_available,
+                weather=condition_data["weather"],
+            )
 
     return {
         "answer": answer,
