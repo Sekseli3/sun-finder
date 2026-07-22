@@ -1,40 +1,67 @@
-# Sunfinder Helsinki
-Have you ever had the problem where you want to catch some sweet sweet sunrays on a terrace or in a park, but builings seem to block everything? Don't worry I have the solution for you: Sunfinder! It shows where to catch those precious rays from an interactive map. Find it in the link below!
-[**Hosted version here → sunfinder-helsinki.onrender.com**](https://sunfinder-helsinki.onrender.com/)
+# Sunfinder Helsinki ☀️
 
-Hosted on Render's free tier. It may take about a minute to wake up after 15
-minutes without visitors.
+> Find a sunny Helsinki terrace, park, or street corner before you leave.
 
-An interactive 2D / 3D map for finding sunlight in Helsinki.
+[**Open the live map**](https://sunfinder-helsinki.onrender.com/) · Python · FastAPI · MapLibre · local LLM and RAG experiment
 
-The frontend is a small MapLibre browser app. Python handles the solar
-calculation, sky estimate, and Bayesian nowcast. The browser streams visible
-building tiles and projects their shadows locally.
+> The public map runs on Render's free tier. If it has been asleep, give it up to a minute to wake up.
 
-## Run it
+Sunfinder combines three things that are easy to confuse:
 
-Create a virtual environment if you want to keep the dependencies isolated,
-then install and run the Python service:
+| Question | What answers it | What it means |
+| --- | --- | --- |
+| Where could sun reach? | Building geometry + solar position | Clear sky potential at street level |
+| Is direct sun likely right now? | City wide weather nowcast | A one hour estimate for an open point |
+| Where should I go? | Local planner | Nearby venue notes plus deterministic ranking |
+
+## Start here
+
+The map starts at Bar Mendocino on Eerikinkatu. Pick a place, move through time, then refresh buildings for the part of Helsinki you can see.
+
+- **Clear sky potential** shows where sun could reach if clouds open.
+- **Direct sun estimate · beta** is a city wide hint about the next hour. It does not know what is happening above one specific street.
+- **Building shadows** are calculated from the sun angle and visible building footprints.
+
+The app is useful for planning, not surveying. Trees, small clouds, building heights, and terrace availability can still change the real answer.
+
+## Run locally
 
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements.txt
-python3 -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 4173
+make run
 ```
 
 Open [http://localhost:4173](http://localhost:4173).
 
-`make install`, `make run`, and `make check` provide the same common actions.
+Useful commands:
 
-## Local LLM and RAG planner
+| Command | What it does |
+| --- | --- |
+| `make install` | Installs Python dependencies |
+| `make run` | Starts the map locally |
+| `make check` | Runs Python and browser checks |
 
-The optional **Plan a sunny outing** tool is a local learning project. It does
-not run on the public Render deployment and it does not need an API key.
+<details>
+<summary>Open the local app from another device with Tailscale</summary>
 
-It uses [Ollama](https://ollama.com/) on your computer with `qwen3:8b` for
-language and `qwen3-embedding:0.6b` for retrieval. A 16 GB NVIDIA card is a
-comfortable fit for this pair. Start by installing Ollama, then run:
+Keep the service private to your tailnet by binding it to the home PC's Tailscale IP:
+
+```sh
+tailscale ip -4
+SUNFINDER_ASSISTANT_ENABLED=1 python3 -m uvicorn backend.main:app --host <TAILSCALE_IP> --port 4173
+```
+
+Then open `http://akselipc:4173` or `http://<TAILSCALE_IP>:4173` from your other Tailscale device. No router port forwarding is needed.
+
+</details>
+
+## Local outing planner
+
+The optional **Plan a sunny outing** button is a local learning project. It stays off on the public Render deployment and does not need an API key.
+
+On the computer that runs Ollama:
 
 ```sh
 make assistant-setup
@@ -43,127 +70,89 @@ make assistant-index
 make assistant-run
 ```
 
-Open `http://localhost:4173`. The **Plan a sunny outing** button appears only
-when the local assistant is enabled. It can handle a request such as
-“Outdoor coffee near Kamppi tomorrow after work” and also uses the current map
-centre and selected map time.
+Try a request like:
 
-The first index is intentionally simple. It embeds a small curated Helsinki
-terrace and café catalogue, saves vectors in ignored `.sunfinder/` files, and
-uses cosine similarity to retrieve notes for the answer. No vector database is
-needed yet.
+> Outdoor coffee near Kamppi tomorrow after work
 
-The LLM parses the request and writes a short answer. Python ranks the venues
-from terrace coordinates, nearby building shadows at now, +30 minutes, and
-+60 minutes, plus distance. The live weather estimate is city wide and only
-applies close to now. Future plans are marked as clear-sky potential. The seed
-catalogue has approximate outdoor points and source links, so always check
-current opening and terrace availability before travelling.
+The planner uses the selected map time and map centre as context. It does not train on your requests.
 
-### Request flow
+## How one planner request moves through the app
 
-![Animated request flow from prompt through Qwen, Python facts, deterministic ranking, and the browser response](docs/request-flow.gif)
+![Animated request flow from prompt through the two Qwen models, Python facts, deterministic ranking, and the browser response](docs/request-flow.gif)
 
-There are two local models in this flow. `qwen3:8b` first turns a
-natural-language request into a place, time, and venue type, then later writes
-a short answer from facts Python has already gathered.
-`qwen3-embedding:0.6b` embeds every venue note when the local index is built,
-then embeds the new request at search time. Python compares that query vector
-with the saved venue vectors using cosine similarity. Neither model fetches
-weather or building data. Python gets those facts, ranks the places, and falls
-back to a plain deterministic answer when building geometry is unavailable.
+### Two models, different jobs
 
-Rebuild the GIF after changing this flow with:
+| Model | Runs when | Job |
+| --- | --- | --- |
+| `qwen3:8b` | Once to parse, then again to write when geometry is available | Extracts place, time, and venue type, then writes a short answer from facts |
+| `qwen3-embedding:0.6b` | When building the index and when searching | Embeds venue notes once, embeds the new request, then supports cosine similarity search |
+
+Python still owns the truth. It fetches weather, gets building geometry, projects shadows, calculates distance, and ranks venues. Qwen never fetches weather or decides a shadow result on its own.
+
+The local RAG index is intentionally small:
+
+```text
+venue catalogue JSON
+        ↓  qwen3-embedding:0.6b
+saved vectors in .sunfinder/venue_index.json
+        ↓  cosine similarity
+relevant venue notes for the answer
+```
+
+There is no vector database yet because the catalogue has only 30 venues. A JSON vector index is faster to inspect and simpler to run locally.
+
+<details>
+<summary>Planner failure behaviour</summary>
+
+If building geometry loads, Python ranks nearby places using projected building shade over now, +30 minutes, and +60 minutes, plus distance.
+
+If building geometry fails, the app does **not** pretend a venue has a good sun score. It ranks the closest curated places by distance and says that shade could not be confirmed.
+
+If the selected time is in the future, the map uses clear sky potential. Current weather only applies close to live time.
+
+</details>
+
+Rebuild the request-flow GIF after changing this architecture:
 
 ```sh
 python3 scripts/build_request_flow_gif.py
 ```
 
-## How it works
+## Direct sun estimate · beta
 
-- The time control uses the `Europe/Helsinki` time zone, including daylight
-  saving transitions.
-- `GET /api/conditions` returns the sun position, current-sky estimate, and
-  direct-sun nowcast. It stays small while the time slider moves.
-- The browser loads prebuilt building vector tiles for the visible map and
-  turns the cached footprints into shadow polygons immediately. It does not
-  wait for a new server shadow response on every slider move.
-- `GET /api/buildings` is a Python fallback. It reads Helsinki's official WFS
-  building layer if the browser tile source is unavailable.
-- `GET /api/place-suggestions` returns debounced Helsinki matches while a
-  place name is being typed. It checks local favourites first, then uses
-  cached Photon search limited to Helsinki.
-- `GET /api/places` resolves a submitted Helsinki venue, landmark, or address.
-  It uses cached OpenStreetMap Nominatim search with a one-request-per-second
-  server-side gate.
-- `GET /api/sun-planner/status` reports whether the local Ollama planner is
-  available. `POST /api/sun-plans` only works when it is enabled locally.
-- `GET /api/scene` remains available for a complete server-side scene response.
-- The backend calculates sun direction in the `Europe/Helsinki` time zone,
-  including daylight-saving transitions.
-- In live mode, the backend retrieves Helsinki cloud cover and estimates the
-  chance of direct sun over the next hour. The map starts with
-  **clear-sky potential** so a pessimistic cloud estimate does not hide a
-  possible sunny gap. Turn it off to fade or suppress shadows using the live
-  sky estimate. These are weather-model estimates, not a local sky
-  observation. A manually selected time always shows clear-sky potential.
-- The normal building path uses compact OpenFreeMap/OpenMapTiles building tiles
-  from Helsinki's map tile service. MapLibre keeps nearby tiles in its browser
-  cache as you pan. The Python fallback uses Helsinki's official WFS building
-  layer and keeps a viewport response in memory for 12 hours.
-- Shadows are projected from building height and sun altitude. They are useful
-  for planning, not survey work.
+The beta estimate answers one narrow question:
 
-## Direct sun estimate
+> Can direct sun reach an open point in Helsinki during the next hour?
 
-The BETA switch is there for a simple question. Is direct sun likely to reach
-an open spot in Helsinki in the next hour? The app makes one estimate for now,
-+30 minutes, and +60 minutes, then averages them.
+It is not a score for a specific terrace. The app takes estimates for now, +30 minutes, and +60 minutes, then averages them.
 
-### What it covers
+| It uses | It does not know |
+| --- | --- |
+| Cloud cover, low cloud, rain chance, weather code, direct radiation, sun altitude, season | A tree, a nearby wall, a small cloud over your street, terrace opening hours |
+| One Open Meteo forecast point in central Helsinki | Whether every part of Helsinki is sunny |
+| Bayesian uncertainty in the learned model weights | Full uncertainty in the weather forecast |
 
-The weather comes from one Open Meteo forecast location at `60.1699, 24.9384`.
-Think of it as a city level clue, not a forecast for every street. A sunny
-result does not mean every part of Helsinki is sunny. A local cloud, a tree, or
-a taller building can still keep a particular spot in shade.
+Current cloud cover and the next hour direct sun estimate can look different. For example, 96% cloud cover is the current sample. A 71% direct sun estimate is an average across current, +30 minute, and +60 minute forecast samples. Neither value belongs to a particular venue.
 
-The map handles buildings separately. It uses the sun angle and building shape
-to draw the shadow. The direct sun number only says something about the sky.
+### Training snapshot
 
-### How it updates
+| Item | Value |
+| --- | --- |
+| Training data | Three years of Helsinki weather reanalysis |
+| Dates | 2023-07-15 to 2026-07-13 |
+| Target | Direct normal irradiance at least 120 W/m² during daylight |
+| Rows | 13,257 daylight rows |
+| Train and validation split | 8,838 and 4,419 chronological rows |
+| Held out accuracy | 96.6% |
+| Held out Brier score | 0.0258 |
+| Average probability baseline | 60.5% accuracy and 0.2397 Brier score |
 
-The browser asks `/api/conditions` every one, five, or ten minutes. One minute
-is the default. The Python service keeps the weather response for five minutes
-so Open Meteo does not get called on every screen refresh.
+The data comes from [Open Meteo's historical weather API](https://open-meteo.com/en/docs/historical-weather-api). These scores are useful checks, not a promise about one Helsinki street. The target and direct radiation input come from the same reanalysis source, so a future version should use FMI observations and old forecast runs.
 
-Each request gets the current cloud cover and weather code, plus three hours of
-cloud, rain chance, direct radiation, and direct normal irradiance. The now
-sample uses the newest cloud and weather code. The +30 and +60 samples use the
-closest hourly forecast. The app turns all three into probabilities and shows
-their average.
+<details>
+<summary>See the direct-sun calculation</summary>
 
-### What it learned from
-
-The model learned from three years of
-[Helsinki weather reanalysis](https://open-meteo.com/en/docs/historical-weather-api),
-from 2023-07-15 to 2026-07-13. It only keeps daylight rows. A row counts as
-direct sun when direct normal irradiance reaches 120 W/m².
-
-There are 13,257 daylight rows. The first 8,838 rows teach the model. The last
-4,419 rows are kept aside for checking it later. That last section includes a
-full year, so the check sees winter, spring, summer, and autumn too.
-
-On that held out data it gets 96.6% threshold accuracy and a 0.0258 Brier
-score. A simple always use the average baseline gets 60.5% and 0.2397. Those
-numbers are useful, but they are not a promise about a particular Helsinki
-street. Both the answer and one very strong input come from the same reanalysis
-data. A proper next step is to use observed FMI sunlight data and old forecast
-runs.
-
-### The actual calculation
-
-The model makes a score called `z`, then turns it into a chance with the
-sigmoid curve.
+The model makes a score called `z`, then sends it through the sigmoid curve:
 
 ```text
 chance = 1 / (1 + exp(-z))
@@ -180,11 +169,7 @@ z = -2.8533
     + 0.0689 * cos(season)
 ```
 
-Cloud, low cloud, and rain chance are numbers from 0 to 1. For example, 60%
-cloud becomes `0.60`. `rain_code` is 1 when the weather code says drizzle,
-rain, snow, or a storm. This is the `rainy_weather_code` flag in the code.
-The radiation fraction compares the direct radiation forecast with a bright sky
-value for the current sun height.
+Cloud, low cloud, and rain chance are fractions from 0 to 1. The radiation fraction compares forecast direct radiation with a bright-sky value for the current sun height.
 
 ```text
 direct_radiation_fraction = clamp(direct_radiation / max(25, 750 * sin(sun_altitude)))
@@ -192,103 +177,91 @@ season_sin = sin(2π * (day_of_year - 1) / 365.2425)
 season_cos = cos(2π * (day_of_year - 1) / 365.2425)
 ```
 
-The season values wrap the year into a circle, so the end of December sits next
-to the start of January.
+For a late July example with 60% total cloud, 40% low cloud, 20% rain chance, a 35° sun, and 108 W/m² direct radiation, `z = 3.5729`. That gives a 97.3% model chance before the fog, rain, and heavy-cloud caps are applied.
 
-The weights work together. For example, low cloud has a small positive weight
-on its own, but the total cloud and cloud interaction terms pull the score down.
-That is a correlation in this dataset, not a claim that low cloud brings sun.
+</details>
 
-Here is a small example. Say it is late July, with 60% total cloud, 40% low
-cloud, 20% rain chance, no rain code, a 35° high sun, and 108 W/m² of direct
-radiation. That gives a radiation fraction of `0.2511`. The season values for
-that day are about `-0.278` and `-0.961`.
+<details>
+<summary>See the Bayesian part</summary>
 
-```text
-z = -2.8533 - 2.6012(0.60) + 0.4081(0.40) - 1.2060(0.60)(0.40)
-    - 1.2874(0.20) + 25.3626(0.2511) + 3.4459(0.574)
-    - 0.3300(-0.278) + 0.0689(-0.961)
-  = 3.5729
-
-chance = 1 / (1 + exp(-3.5729)) = 0.973
-```
-
-That becomes a 97% chance. The app then has a last sanity check. Fog, rain,
-and very heavy cloud with almost no radiation can pull that number down before
-it reaches the screen.
-
-### The Bayesian bit
-
-The model is now Bayesian logistic regression. It starts with these priors:
+This is Bayesian logistic regression with a Laplace approximation, not an LLM.
 
 ```text
 intercept ~ Normal(0.3130, 2.5²)
 each feature weight ~ Normal(0, 2.5²)
-```
 
-`0.3130` is the log odds of direct sun in the training rows. The other prior
-means are zero, so the model does not begin by assuming a huge effect from any
-one clue.
-
-The trainer finds the most likely weights after seeing the data. That point is
-called MAP. It then looks at the curvature around that point and turns it into
-a Gaussian approximation of the posterior.
-
-```text
 weights | data ≈ Normal(MAP weights, inverse negative Hessian)
 ```
 
-This is called a Laplace approximation. It is much lighter than running a long
-MCMC chain, which makes it a good fit for this small Python app. Training took
-10 Newton steps on the current three year data set.
-
-For every live forecast row, the app gets a middle probability and a 90% model
-range from that posterior. For the example above, the feature vector `x` gives:
+The trainer finds MAP weights with 10 Newton steps, then uses the inverse negative Hessian as an approximate posterior covariance. For a new weather row, that gives a middle chance plus a 90% model range.
 
 ```text
 xᵀΣx = 0.0664
 sd(z) = sqrt(0.0664) = 0.2577
 z | data ≈ Normal(3.5729, 0.2577²)
 
-90% range for chance
+90% chance range
 = sigmoid(3.5729 ± 1.645 * 0.2577)
 = 0.9589 to 0.9820
 ```
 
-So the middle result is 97.3% and the 90% model range is 95.9% to 98.2%.
+The live number averages now, +30 minutes, and +60 minutes. Those samples share model weights, so the app carries the shared covariance through the average instead of averaging three unrelated ranges.
 
-The number on screen averages now, +30 minutes, and +60 minutes. Those three
-rows share the same learned weights, so the app carries the shared covariance
-through that average with a small delta-method calculation. It does not just
-average three separate ranges.
-
-That range only covers uncertainty in the learned weights. It does not know
-whether a new small cloud will arrive above one street, so it is not a full
-weather confidence interval.
-
-To train again with the latest three years of data, run:
+Train again with the latest three years of data:
 
 ```sh
 python3 scripts/train_direct_sun_model.py --days 1095
 ```
 
-The next useful upgrade is to train against local
-[FMI solar radiation observations](https://en.ilmatieteenlaitos.fi/weather-observations)
-and test with old forecast runs. That would make the result much closer to a
-real nowcast check.
+The next worthwhile upgrade is training against local [FMI solar radiation observations](https://en.ilmatieteenlaitos.fi/weather-observations) and validating against old forecast runs.
 
-## How a shadow is calculated
+</details>
 
-For a building of height `H` and a sun altitude of `α`, the projected shadow
-length is `H / tan(α)`. The app caps that length at 560 metres so very low sun
-does not create enormous map geometry.
+## Shadow geometry
+
+For a building with height `H` and sun altitude `α`, the projected shadow length is:
+
+```text
+shadow length = H / tan(α)
+```
+
+The app caps shadows at 560 metres so very low sun does not make huge map polygons.
 
 ```python
 shadow_length_m = min(560, building_height_m / tan(radians(sun_altitude_deg)))
-shadow_bearing_deg = (sun_azimuth_deg + 180) % 360  # opposite the sun
+shadow_bearing_deg = (sun_azimuth_deg + 180) % 360
 ```
 
-Each point in the building footprint is shifted by that distance and bearing.
-The original and shifted footprints are then combined into one convex hull
-polygon. For example, a 20 m building with a 30° high sun casts a roughly
-34.6 m shadow. If the sun is at 135°, the shadow points towards 315°.
+Every footprint point is shifted by that distance and bearing. The original and shifted footprints become one convex hull polygon. A 20 metre building with a 30° sun casts a shadow of roughly 34.6 metres.
+
+## Data and endpoints
+
+| Data | Used for |
+| --- | --- |
+| Helsinki map tiles | Visible browser building footprints |
+| Helsinki WFS | Python building fallback and planner geometry |
+| Open Meteo | Current sky estimate and direct sun inputs |
+| OpenStreetMap, Photon, and Nominatim | Map search and place suggestions |
+| Local venue JSON | Seed data for RAG retrieval |
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/conditions` | Sun position, current sky, and direct sun nowcast |
+| `GET /api/buildings` | Python building fallback for a map area |
+| `GET /api/place-suggestions` | Debounced place suggestions while typing |
+| `GET /api/places` | Submitted place or address search |
+| `GET /api/sun-planner/status` | Local Ollama planner availability |
+| `POST /api/sun-plans` | Local planner result |
+
+## Repository guide
+
+| Path | What lives there |
+| --- | --- |
+| `frontend/` | MapLibre interface, browser building tiles, and local shadow projection |
+| `backend/main.py` | FastAPI routes, solar calculation, weather, and building fallback |
+| `backend/nowcast.py` | Direct sun estimate at runtime |
+| `backend/bayesian.py` | Small dependency-free Bayesian logistic regression implementation |
+| `backend/sun_planner.py` | Ollama client, RAG index, and planner ranking helpers |
+| `backend/venue_data/` | Curated venue notes for the local RAG experiment |
+| `scripts/train_direct_sun_model.py` | Rebuilds the Bayesian nowcast artifact |
+| `scripts/build_request_flow_gif.py` | Rebuilds the README animation |
