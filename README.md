@@ -60,6 +60,22 @@ applies close to now. Future plans are marked as clear-sky potential. The seed
 catalogue has approximate outdoor points and source links, so always check
 current opening and terrace availability before travelling.
 
+### Request flow
+
+![Animated request flow from prompt through Qwen, Python facts, deterministic ranking, and the browser response](docs/request-flow.gif)
+
+Qwen has two narrow jobs. It first turns a natural-language request into a
+place, time, and venue type. Later it writes a short answer from facts that
+Python has already gathered. It does not fetch weather, building data, or venue
+data itself. Python gets those facts, ranks the places, and falls back to a
+plain deterministic answer when building geometry is unavailable.
+
+Rebuild the GIF after changing this flow with:
+
+```sh
+python3 scripts/build_request_flow_gif.py
+```
+
 ## How it works
 
 - The time control uses the `Europe/Helsinki` time zone, including daylight
