@@ -405,7 +405,12 @@ async function requestSunPlan(event) {
     if (!response.ok) throw new Error(payload.detail || `The API returned ${response.status}`);
     if (requestId !== state.sunPlannerRequestId) return;
     renderSunPlan(payload);
-    setSunPlannerStatus('Plan ready. Tap a place to move the map there.', 'ready');
+    setSunPlannerStatus(
+      (payload?.meta?.plan_mode || 'sun') === 'sun'
+        ? 'Sun plan ready. Tap a place to move the map there.'
+        : 'Nearby choices ready. Tap a place to move the map there.',
+      'ready'
+    );
   } catch (error) {
     if (error.name === 'AbortError' || requestId !== state.sunPlannerRequestId) return;
     console.warn('Sun planner failed', error);
@@ -420,6 +425,7 @@ async function requestSunPlan(event) {
 
 function renderSunPlan(payload) {
   const results = Array.isArray(payload.recommendations) ? payload.recommendations : [];
+  const planMode = String(payload?.meta?.plan_mode || 'sun');
   elements['sun-planner-answer'].textContent = String(payload.answer || 'Here are the closest sunny options.');
   const container = elements['sun-planner-results'];
   container.replaceChildren();
@@ -428,22 +434,30 @@ function renderSunPlan(payload) {
     const venue = result?.venue;
     if (!venue || !Number.isFinite(Number(venue.latitude)) || !Number.isFinite(Number(venue.longitude))) return;
     const card = document.createElement('article');
-    card.className = 'sun-plan-result';
+    card.className = planMode === 'sun' ? 'sun-plan-result' : 'sun-plan-result sun-plan-result--fallback';
 
     const choose = document.createElement('button');
     choose.type = 'button';
     choose.className = 'sun-plan-result-main';
     choose.setAttribute('aria-label', `Show ${venue.name} on the map`);
-    const rank = document.createElement('span');
-    rank.className = 'sun-plan-rank';
-    rank.textContent = String(index + 1);
+    if (planMode === 'sun') {
+      const rank = document.createElement('span');
+      rank.className = 'sun-plan-rank';
+      rank.textContent = String(index + 1);
+      choose.append(rank);
+    } else {
+      choose.classList.add('sun-plan-result-main--fallback');
+    }
     const copy = document.createElement('span');
     const name = document.createElement('strong');
     name.textContent = String(venue.name || 'Helsinki venue');
     const detail = document.createElement('small');
-    detail.textContent = `${String(result.exposure || 'sun check unavailable')} · ${formatVenueDistance(result.distance_meters)}`;
+    const exposure = planMode === 'building_unavailable'
+      ? 'nearby fallback'
+      : String(result.exposure || 'sun check unavailable');
+    detail.textContent = `${exposure} · ${formatVenueDistance(result.distance_meters)}`;
     copy.append(name, detail);
-    choose.append(rank, copy);
+    choose.append(copy);
     choose.addEventListener('click', () => {
       moveToPlace({
         name: String(venue.name || 'Helsinki venue'),
@@ -476,7 +490,11 @@ function renderSunPlan(payload) {
   }
   const weather = payload?.weather || {};
   const geometryAvailable = payload?.meta?.building_geometry_available === true;
-  elements['sun-planner-note'].textContent = !geometryAvailable
+  elements['sun-planner-note'].textContent = planMode === 'no_projected_sun'
+    ? 'No close point is projected to receive direct sun in this one-hour window. These are nearby fallbacks.'
+    : planMode === 'after_sunset'
+      ? 'The sun is below the horizon at the selected time. These are nearby fallbacks.'
+    : !geometryAvailable
     ? 'The city building check did not complete for this area, so this list is by nearby distance only. Press Plan it again to retry the building check.'
     : weather.applies_to_selected_time
       ? 'The weather number is a city-wide estimate for an open point. Trees and small local clouds are not modelled.'

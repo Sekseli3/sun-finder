@@ -219,7 +219,7 @@ class OllamaClient:
                 "Never call a ranking score a sun score or a weather probability.",
                 "A direct-sun probability is city-wide, covers the next hour, and only applies to an open point.",
                 "If building data is unavailable, do not call any venue sunny or shaded. Say the choices are nearby, not confirmed sun spots.",
-                "Do not infer outdoor seating from a venue name. The outdoor note is the only source for that claim.",
+                "Do not mention terrace availability, outdoor seating, menus, or opening hours unless those facts are explicitly supplied.",
                 "Only recommend venues listed in the deterministic facts. Retrieved notes support those venues only.",
                 "Give the top recommendation first and keep the answer under 130 words.",
                 "Original request:",

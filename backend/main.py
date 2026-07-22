@@ -654,29 +654,55 @@ def planner_language_facts(
                 "distance_meters": recommendation["distance_meters"],
                 "exposure": recommendation["exposure"],
                 "ranking_basis": recommendation["ranking_basis"],
-                "outdoor_note": recommendation["venue"]["terrace_note"],
             }
             for recommendation in recommendations
         ],
     }
 
 
-def deterministic_plan_answer(
+def planner_result_mode(
     recommendations: list[dict[str, Any]],
     *,
     building_geometry_available: bool,
+) -> str:
+    """Classify the result before asking the language model to describe it."""
+    if not building_geometry_available:
+        return "building_unavailable"
+    sample_details = [
+        sample
+        for recommendation in recommendations
+        for sample in recommendation.get("sample_details", [])
+        if isinstance(sample, dict)
+    ]
+    if not any(sample.get("daylight") for sample in sample_details):
+        return "after_sunset"
+    if any((recommendation.get("sun_coverage_percent") or 0) > 0 for recommendation in recommendations):
+        return "sun"
+    return "no_projected_sun"
+
+
+def deterministic_plan_answer(
+    recommendations: list[dict[str, Any]],
+    *,
+    plan_mode: str,
     weather: dict[str, Any],
 ) -> str:
-    """Keep the planner useful if its second local model call fails."""
+    """Describe a non-sun fallback, or keep a sun result usable without Qwen."""
     if not recommendations:
         return "I could not find a curated terrace or café close to that spot. Try another Helsinki area."
     names = ", ".join(recommendation["venue"]["name"] for recommendation in recommendations)
     lead = recommendations[0]
-    geometry_note = (
-        f"{lead['venue']['name']} looks best for projected building sun over the next hour."
-        if building_geometry_available
-        else "I could not load building geometry for this area, so these are the closest curated choices rather than confirmed sun spots."
-    )
+    if plan_mode == "no_projected_sun":
+        return (
+            "No nearby curated place has projected direct sun during the next hour. "
+            f"These are nearby choices, not sun picks: {names}."
+        )
+    if plan_mode == "after_sunset":
+        return f"The sun is below the horizon at the selected time. These are nearby choices, not sun picks: {names}."
+    if plan_mode == "building_unavailable":
+        geometry_note = "I could not complete the building check for this area, so these are nearby choices rather than confirmed sun spots."
+    else:
+        geometry_note = f"{lead['venue']['name']} has the strongest projected building-sun window over the next hour."
     weather_note = (
         f" The city-wide next-hour direct-sun estimate is {weather['nowcast']['probability']}% for an open point, not for a specific venue."
         if weather.get("applies_to_selected_time") and weather.get("nowcast", {}).get("available")
@@ -1346,51 +1372,46 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
         shadow_samples,
         building_geometry_available=building_geometry_available,
     )
-    try:
-        retrieved_documents = await asyncio.to_thread(venue_retriever.search, request.message)
-    except OllamaUnavailableError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-
-    recommendation_ids = [recommendation["venue"]["id"] for recommendation in recommendations]
-    recommendation_id_set = set(recommendation_ids)
-    documents_by_id = {
-        document.venue_id: document
-        for document in retrieved_documents
-        if document.venue_id in recommendation_id_set
-    }
-    for recommendation in recommendations:
-        venue = recommendation["venue"]
-        if venue["id"] not in documents_by_id:
-            documents_by_id[venue["id"]] = RetrievedVenueDocument(
-                venue_id=venue["id"],
-                score=1.0,
-                text="\n".join(
-                    (
-                        venue["name"],
-                        f"Area: {venue['area']}",
-                        f"Outdoor note: {venue['terrace_note']}",
-                    )
-                ),
-                source_label=venue["source"]["label"],
-                source_url=venue["source"]["url"],
-            )
-    source_documents = [documents_by_id[venue_id] for venue_id in recommendation_ids if venue_id in documents_by_id]
-    response_facts = planner_language_facts(
-        anchor=anchor,
-        planned_time=planned_time,
-        recommendations=recommendations,
+    plan_mode = planner_result_mode(
+        recommendations,
         building_geometry_available=building_geometry_available,
-        building_source=building_source,
-        weather=condition_data["weather"],
     )
-    if not building_geometry_available:
+    source_documents: list[RetrievedVenueDocument] = []
+    if plan_mode != "sun":
         answer = deterministic_plan_answer(
             recommendations,
-            building_geometry_available=building_geometry_available,
+            plan_mode=plan_mode,
             weather=condition_data["weather"],
         )
     else:
         try:
+            retrieved_documents = await asyncio.to_thread(venue_retriever.search, request.message)
+            retrieved_scores = {document.venue_id: document.score for document in retrieved_documents}
+            venues_by_id = {venue.venue_id: venue for venue, _ in nearby_venues}
+            source_documents = [
+                RetrievedVenueDocument(
+                    venue_id=recommendation["venue"]["id"],
+                    score=retrieved_scores.get(recommendation["venue"]["id"], 1.0),
+                    text="\n".join(
+                        (
+                            recommendation["venue"]["name"],
+                            f"Area: {recommendation['venue']['area']}",
+                            f"Type: {venues_by_id[recommendation['venue']['id']].kind}",
+                        )
+                    ),
+                    source_label=recommendation["venue"]["source"]["label"],
+                    source_url=recommendation["venue"]["source"]["url"],
+                )
+                for recommendation in recommendations
+            ]
+            response_facts = planner_language_facts(
+                anchor=anchor,
+                planned_time=planned_time,
+                recommendations=recommendations,
+                building_geometry_available=building_geometry_available,
+                building_source=building_source,
+                weather=condition_data["weather"],
+            )
             answer = await asyncio.to_thread(
                 assistant_client.write_answer,
                 request=request.message,
@@ -1400,7 +1421,7 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
         except OllamaUnavailableError:
             answer = deterministic_plan_answer(
                 recommendations,
-                building_geometry_available=building_geometry_available,
+                plan_mode=plan_mode,
                 weather=condition_data["weather"],
             )
 
@@ -1428,6 +1449,7 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
             "building_source": building_source,
             "building_cached": building_cached,
             "building_geometry_available": building_geometry_available,
+            "plan_mode": plan_mode,
             "catalogue_size": len(venue_catalogue),
             "candidate_count": len(nearby_venues),
         },
