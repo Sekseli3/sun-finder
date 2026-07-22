@@ -64,11 +64,14 @@ current opening and terrace availability before travelling.
 
 ![Animated request flow from prompt through Qwen, Python facts, deterministic ranking, and the browser response](docs/request-flow.gif)
 
-Qwen has two narrow jobs. It first turns a natural-language request into a
-place, time, and venue type. Later it writes a short answer from facts that
-Python has already gathered. It does not fetch weather, building data, or venue
-data itself. Python gets those facts, ranks the places, and falls back to a
-plain deterministic answer when building geometry is unavailable.
+There are two local models in this flow. `qwen3:8b` first turns a
+natural-language request into a place, time, and venue type, then later writes
+a short answer from facts Python has already gathered.
+`qwen3-embedding:0.6b` embeds every venue note when the local index is built,
+then embeds the new request at search time. Python compares that query vector
+with the saved venue vectors using cosine similarity. Neither model fetches
+weather or building data. Python gets those facts, ranks the places, and falls
+back to a plain deterministic answer when building geometry is unavailable.
 
 Rebuild the GIF after changing this flow with:
 

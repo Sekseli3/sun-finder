@@ -107,7 +107,7 @@ def draw_frame(active_step: str, pulse: bool) -> Image.Image:
     image = Image.new("RGB", (WIDTH, HEIGHT), BACKGROUND)
     draw = ImageDraw.Draw(image)
     draw.text((44, 36), "Sunfinder local planner request flow", fill=PAPER, font=TITLE_FONT)
-    draw.text((44, 77), "Qwen understands and writes. Python fetches facts and decides the ranking.", fill=MUTED, font=SUBTITLE_FONT)
+    draw.text((44, 77), "Qwen 8B parses and writes. Qwen 0.6B embeds. Python fetches facts and decides the ranking.", fill=MUTED, font=SUBTITLE_FONT)
 
     progress = {
         "user": 1,
@@ -134,7 +134,7 @@ def draw_frame(active_step: str, pulse: bool) -> Image.Image:
         "planner": (["3 · Python planner"], ["validates the request", "and coordinates", "the evidence"]),
         "weather": (["Weather + nowcast"], ["Open-Meteo inputs", "Bayesian one-hour", "open-point estimate"]),
         "buildings": (["Building geometry"], ["Helsinki WFS", "projected shade", "at now, +30, +60"]),
-        "rag": (["Local RAG"], ["venue JSON", "embedding index", "relevant source notes"]),
+        "rag": (["Qwen 0.6B RAG"], ["embeds the request", "compares with prebuilt", "venue vectors"]),
         "rank": (["4 · Deterministic rank"], ["building shade + distance", "or distance only", "when geometry fails"]),
         "writer": (["5 · Qwen 8B writes"], ["gets labelled facts", "not live API access", "or ranking internals"]),
         "result": (["6 · Browser response"], ["answer + 3 places", "source links", "clear caveats"]),
@@ -150,7 +150,7 @@ def draw_frame(active_step: str, pulse: bool) -> Image.Image:
     for key, (title, body) in cards.items():
         draw_card(draw, key, title, body, active=key in active_keys, pulse=pulse)
 
-    footer = "Qwen never fetches weather or building data. Python does."
+    footer = "Qwen 8B parses + writes. Qwen 0.6B embeds. Python fetches weather and buildings."
     draw.rounded_rectangle((45, 744, 690, 764), radius=10, fill="#203b4c")
     draw.text((59, 746), footer, fill="#d8e8df", font=FOOTER_FONT)
     return image
