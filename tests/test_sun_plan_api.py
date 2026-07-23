@@ -118,6 +118,59 @@ class SunPlanApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["request"]["venue_preference"], "beer")
         self.assertTrue(all("wine" not in item["venue"]["kind"] for item in payload["recommendations"]))
 
+    async def test_departure_place_and_deadline_override_the_map_centre(self) -> None:
+        request = SunPlanRequest(
+            message="I am going tomorrow 2pm to leave Helsinki from Karhupuisto. I want a lager in the sun before.",
+            map_latitude=60.1657789,
+            map_longitude=24.9313873,
+            selected_time=datetime(2026, 7, 22, 15, 0, tzinfo=UTC),
+        )
+        settings = AssistantSettings(True, "http://localhost:11434", "chat", "embed", 1)
+        weather = {
+            "available": True,
+            "applies_to_selected_time": False,
+            "label": "Clear-sky potential",
+            "cloud_cover": None,
+            "note": "Future geometry only.",
+            "nowcast": {"available": False, "probability": None, "uncertainty": {"lower": None, "upper": None}},
+        }
+        karhupuisto = {
+            "name": "Karhupuisto",
+            "detail": "Kallio",
+            "latitude": 60.1843,
+            "longitude": 24.9540,
+            "kind": "park",
+        }
+        with (
+            patch.object(main, "assistant_settings", settings),
+            patch.object(main.assistant_client, "available_models", return_value={"chat", "embed"}),
+            patch.object(
+                main.assistant_client,
+                "structured_intent",
+                return_value=SunPlanIntent(
+                    anchor_query=None,
+                    requested_time=datetime(2026, 7, 23, 14, 0, tzinfo=main.HELSINKI_TIME_ZONE),
+                    time_relation="at",
+                    venue_kind="bar",
+                ),
+            ),
+            patch.object(main.place_search_store, "get", return_value=([karhupuisto], "nominatim", False)) as place_search,
+            patch.object(main.building_store, "get", return_value=(main.FALLBACK_FEATURES[:4], "helsinki-wfs", True)),
+            patch("backend.main.current_conditions", new=AsyncMock(return_value={"weather": weather})),
+            patch("backend.main.create_shadows", return_value=[]),
+            patch.object(main.venue_retriever, "search", return_value=[]),
+            patch.object(main.assistant_client, "write_answer", return_value="Try the first result."),
+        ):
+            payload = await main.sun_plans(request)
+
+        place_search.assert_called_once_with("Karhupuisto")
+        self.assertEqual(payload["request"]["anchor"]["name"], "Karhupuisto")
+        self.assertEqual(payload["request"]["time_relation"], "before")
+        self.assertEqual(payload["request"]["requested_at"], "2026-07-23T11:00:00+00:00")
+        self.assertEqual(payload["request"]["at"], "2026-07-23T10:00:00+00:00")
+        self.assertIn("13:00–14:00 Helsinki time", payload["request"]["window_label"])
+        self.assertGreater(payload["recommendations"][0]["distance_meters"], 100)
+
     async def test_plan_uses_a_nearby_fallback_when_every_candidate_is_projected_shaded(self) -> None:
         request = SunPlanRequest(
             message="I need a refreshment nearby",
@@ -169,6 +222,7 @@ class SunPlanApiTests(unittest.IsolatedAsyncioTestCase):
         facts = main.planner_language_facts(
             anchor={"name": "Eerikinkatu", "detail": "Kamppi", "latitude": 60.166, "longitude": 24.933},
             planned_time=datetime(2026, 7, 22, 15, 0, tzinfo=UTC),
+            planned_window="2026-07-22, 18:00–19:00 Helsinki time",
             building_geometry_available=True,
             building_source="helsinki-wfs",
             weather={
@@ -189,6 +243,7 @@ class SunPlanApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(facts["weather"]["direct_sun_probability"], 71)
+        self.assertEqual(facts["planned_window"], "2026-07-22, 18:00–19:00 Helsinki time")
         self.assertNotIn("cloud_cover", facts["weather"])
         self.assertNotIn("sun_score", facts["recommendations"][0])
         self.assertNotIn("ranking_score", facts["recommendations"][0])

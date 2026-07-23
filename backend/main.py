@@ -34,10 +34,12 @@ from backend.sun_planner import (
     RetrievedVenueDocument,
     SunPlanRequest,
     VenueRetriever,
+    fallback_anchor_hint,
     load_environment_file,
     load_venues,
     planner_venues_near,
     rank_venues_by_sun,
+    time_relation_for_request,
     venue_preference_for_request,
 )
 
@@ -601,6 +603,13 @@ def planner_timestamp(timestamp: datetime) -> datetime:
     return timestamp.astimezone(UTC)
 
 
+def planner_window_label(planned_time: datetime) -> str:
+    """Return the one-hour window in the person’s local Helsinki clock."""
+    local_start = planned_time.astimezone(HELSINKI_TIME_ZONE)
+    local_end = (planned_time + timedelta(minutes=60)).astimezone(HELSINKI_TIME_ZONE)
+    return f"{local_start:%Y-%m-%d}, {local_start:%H:%M}–{local_end:%H:%M} Helsinki time"
+
+
 def planner_weather_summary(weather: dict[str, Any]) -> dict[str, Any]:
     nowcast = weather.get("nowcast") if isinstance(weather.get("nowcast"), dict) else {}
     uncertainty = nowcast.get("uncertainty") if isinstance(nowcast.get("uncertainty"), dict) else {}
@@ -622,6 +631,7 @@ def planner_language_facts(
     *,
     anchor: dict[str, Any],
     planned_time: datetime,
+    planned_window: str,
     recommendations: list[dict[str, Any]],
     building_geometry_available: bool,
     building_source: str,
@@ -643,6 +653,7 @@ def planner_language_facts(
     return {
         "anchor": {key: anchor.get(key) for key in ("name", "detail", "latitude", "longitude")},
         "planned_time": planned_time.isoformat(),
+        "planned_window": planned_window,
         "window_minutes": 60,
         "building_geometry_available": building_geometry_available,
         "building_source": building_source,
@@ -685,6 +696,7 @@ def deterministic_plan_answer(
     recommendations: list[dict[str, Any]],
     *,
     plan_mode: str,
+    planned_window: str,
     weather: dict[str, Any],
 ) -> str:
     """Describe a non-sun fallback, or keep a sun result usable without Qwen."""
@@ -694,15 +706,15 @@ def deterministic_plan_answer(
     lead = recommendations[0]
     if plan_mode == "no_projected_sun":
         return (
-            "No nearby curated place has projected direct sun during the next hour. "
+            f"No nearby curated place has projected direct sun during {planned_window}. "
             f"These are nearby choices, not sun picks: {names}."
         )
     if plan_mode == "after_sunset":
-        return f"The sun is below the horizon at the selected time. These are nearby choices, not sun picks: {names}."
+        return f"The sun is below the horizon during {planned_window}. These are nearby choices, not sun picks: {names}."
     if plan_mode == "building_unavailable":
-        geometry_note = "I could not complete the building check for this area, so these are nearby choices rather than confirmed sun spots."
+        geometry_note = f"I could not complete the building check for {planned_window}, so these are nearby choices rather than confirmed sun spots."
     else:
-        geometry_note = f"{lead['venue']['name']} has the strongest projected building-sun window over the next hour."
+        geometry_note = f"{lead['venue']['name']} has the strongest projected building-sun window during {planned_window}."
     weather_note = (
         f" The city-wide next-hour direct-sun estimate is {weather['nowcast']['probability']}% for an open point, not for a specific venue."
         if weather.get("applies_to_selected_time") and weather.get("nowcast", {}).get("available")
@@ -1314,19 +1326,23 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
     except OllamaUnavailableError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
-    planned_time = planner_timestamp(intent.requested_time or selected_time)
+    time_relation = time_relation_for_request(request.message, intent.time_relation)
+    requested_time = planner_timestamp(intent.requested_time or selected_time)
+    planned_time = requested_time - timedelta(minutes=60) if time_relation == "before" else requested_time
+    planned_window = planner_window_label(planned_time)
     anchor = {
         "name": "Current map view",
         "detail": "Map centre",
         "latitude": request.map_latitude,
         "longitude": request.map_longitude,
     }
-    if intent.anchor_query:
-        place_results, place_source, _ = await asyncio.to_thread(place_search_store.get, intent.anchor_query)
+    anchor_query = intent.anchor_query or fallback_anchor_hint(request.message)
+    if anchor_query:
+        place_results, place_source, _ = await asyncio.to_thread(place_search_store.get, anchor_query)
         if not place_results:
             if place_source == "unavailable":
                 raise HTTPException(status_code=503, detail="Place search is unavailable. Try again shortly.")
-            raise HTTPException(status_code=422, detail=f"I could not find {intent.anchor_query} in Helsinki")
+            raise HTTPException(status_code=422, detail=f"I could not find {anchor_query} in Helsinki")
         anchor = place_results[0]
 
     venue_preference = venue_preference_for_request(request.message, intent.venue_kind)
@@ -1381,6 +1397,7 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
         answer = deterministic_plan_answer(
             recommendations,
             plan_mode=plan_mode,
+            planned_window=planned_window,
             weather=condition_data["weather"],
         )
     else:
@@ -1407,6 +1424,7 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
             response_facts = planner_language_facts(
                 anchor=anchor,
                 planned_time=planned_time,
+                planned_window=planned_window,
                 recommendations=recommendations,
                 building_geometry_available=building_geometry_available,
                 building_source=building_source,
@@ -1422,6 +1440,7 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
             answer = deterministic_plan_answer(
                 recommendations,
                 plan_mode=plan_mode,
+                planned_window=planned_window,
                 weather=condition_data["weather"],
             )
 
@@ -1431,7 +1450,10 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
             "message": request.message,
             "anchor": anchor,
             "at": planned_time.isoformat(),
+            "requested_at": requested_time.isoformat(),
+            "window_label": planned_window,
             "window_minutes": 60,
+            "time_relation": time_relation,
             "venue_kind": intent.venue_kind,
             "venue_preference": venue_preference,
         },

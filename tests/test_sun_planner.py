@@ -10,10 +10,12 @@ from backend.sun_planner import (
     Venue,
     VenueRetriever,
     cosine_similarity,
+    fallback_anchor_hint,
     load_venues,
     planner_venues_near,
     point_in_feature,
     rank_venues_by_sun,
+    time_relation_for_request,
     venue_preference_for_request,
     venues_near,
 )
@@ -106,6 +108,13 @@ class SunPlannerTests(unittest.TestCase):
 
         self.assertEqual(preference, "beer")
         self.assertEqual([venue.name for venue, _ in nearby], ["Shaded Bar"])
+
+    def test_departure_phrase_keeps_the_location_and_before_deadline(self) -> None:
+        request = "I am leaving Helsinki from Karhupuisto tomorrow at 2pm and want a lager before"
+
+        self.assertEqual(fallback_anchor_hint(request), "Karhupuisto")
+        self.assertEqual(time_relation_for_request(request, "at"), "before")
+        self.assertIsNone(fallback_anchor_hint("I am in a bad mood and want a refreshment"))
 
     def test_ranker_prefers_unshaded_terrace_over_nearer_shaded_one(self) -> None:
         shadow = {

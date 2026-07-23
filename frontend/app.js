@@ -83,7 +83,7 @@ function initialise() {
     'weather-callout', 'weather-glyph', 'weather-title', 'weather-detail', 'clear-sky-toggle',
     'nowcast-control', 'nowcast-toggle', 'nowcast-info', 'nowcast-dialog', 'nowcast-range', 'close-nowcast', 'legend-shadow-label',
     'header-status', 'place-panel', 'close-place-panel', 'open-place-panel', 'place-search-form', 'place-search', 'place-search-submit', 'place-search-results', 'place-select', 'load-buildings', 'building-status', 'data-note',
-    'sun-planner', 'close-sun-planner', 'open-sun-planner', 'sun-planner-form', 'sun-planner-prompt', 'sun-planner-submit', 'sun-planner-status', 'sun-planner-response', 'sun-planner-answer', 'sun-planner-results', 'sun-planner-note',
+    'sun-planner', 'close-sun-planner', 'open-sun-planner', 'sun-planner-form', 'sun-planner-prompt', 'sun-planner-submit', 'sun-planner-status', 'sun-planner-response', 'sun-planner-window', 'sun-planner-answer', 'sun-planner-results', 'sun-planner-note',
     'map-loading', 'map-loading-title', 'map-loading-detail', 'inspector', 'inspector-title',
     'inspector-detail', 'close-inspector', 'locate-button', 'about-button', 'about-dialog',
     'close-about', 'toast'
@@ -426,6 +426,13 @@ async function requestSunPlan(event) {
 function renderSunPlan(payload) {
   const results = Array.isArray(payload.recommendations) ? payload.recommendations : [];
   const planMode = String(payload?.meta?.plan_mode || 'sun');
+  const windowLabel = String(payload?.request?.window_label || '');
+  const anchorName = String(payload?.request?.anchor?.name || 'Current map view');
+  const anchorLabel = anchorName === 'Current map view' ? 'Map centre' : `Near ${anchorName}`;
+  elements['sun-planner-window'].textContent = windowLabel
+    ? `${anchorLabel} · Plan time · ${windowLabel}`
+    : anchorLabel;
+  elements['sun-planner-window'].hidden = false;
   elements['sun-planner-answer'].textContent = String(payload.answer || 'Here are the closest sunny options.');
   const container = elements['sun-planner-results'];
   container.replaceChildren();

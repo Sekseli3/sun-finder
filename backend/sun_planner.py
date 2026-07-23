@@ -11,10 +11,11 @@ import hashlib
 import json
 import math
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -42,6 +43,7 @@ class SunPlanIntent(BaseModel):
 
     anchor_query: str | None = Field(default=None, max_length=100)
     requested_time: datetime | None = None
+    time_relation: Literal["at", "before"] = "at"
     venue_kind: str = Field(default="terrace_or_cafe", max_length=40)
 
 
@@ -168,8 +170,11 @@ class OllamaClient:
                 f"Map selected Helsinki time: {selected_time.isoformat()}",
                 "Use requested_time only when the person supplied a time.",
                 "Interpret after work as 18:00 Helsinki time.",
-                "Use anchor_query only for a place, area, or address explicitly mentioned.",
+                "Use anchor_query for a place, area, address, starting point, or departure point explicitly mentioned.",
+                "For example, 'leaving from Karhupuisto' means anchor_query is 'Karhupuisto'.",
                 "For here, nearby, or no location, leave anchor_query null.",
+                "For 'before 14:00' or 'leaving at 14:00 and wanting sun before', set requested_time to 14:00 and time_relation to 'before'.",
+                "Otherwise use time_relation 'at'.",
                 "Use venue_kind 'bar' for beer, lager, wine, cocktails, or other drinking requests.",
                 "Use venue_kind 'cafe' for coffee, tea, cake, or bakery requests.",
                 "Use venue_kind 'terrace_or_cafe' when the venue type is not clear.",
@@ -221,6 +226,7 @@ class OllamaClient:
                 "If building data is unavailable, do not call any venue sunny or shaded. Say the choices are nearby, not confirmed sun spots.",
                 "Do not mention terrace availability, outdoor seating, menus, or opening hours unless those facts are explicitly supplied.",
                 "Only recommend venues listed in the deterministic facts. Retrieved notes support those venues only.",
+                "The interface shows planned_window separately. Do not say 'right now' or 'the next hour' without that exact window.",
                 "Give the top recommendation first and keep the answer under 130 words.",
                 "Original request:",
                 request,
@@ -456,6 +462,38 @@ def venue_matches_preference(venue: Venue, preference: str) -> bool:
 
 def request_words(value: str) -> set[str]:
     return set("".join(character if character.isalnum() else " " for character in value.casefold()).split())
+
+
+def time_relation_for_request(message: str, model_time_relation: str) -> Literal["at", "before"]:
+    """Keep an explicit departure deadline from being lost in model phrasing."""
+    words = request_words(message)
+    if model_time_relation == "before" or ("before" in words and {"leave", "leaving", "departure"} & words):
+        return "before"
+    return "at"
+
+
+def fallback_anchor_hint(message: str) -> str | None:
+    """Extract a likely place after an unambiguous location cue as a safety net.
+
+    This is deliberately only a fallback when the structured extractor did not
+    return a place. The resulting text is still resolved by the normal place
+    search rather than being treated as a hard-coded venue alias.
+    """
+    cue = re.search(r"\b(?:from|near|around|by)\s+(.+)", message, flags=re.IGNORECASE)
+    if not cue:
+        return None
+    candidate = cue.group(1)
+    boundary = re.search(
+        r"\b(?:i|we|you|to|for|before|after|tomorrow|today|tonight|with|and|then|but|where|what)\b",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    if boundary:
+        candidate = candidate[:boundary.start()]
+    candidate = " ".join(candidate.strip(" ,.!?;:").split())
+    if not candidate or request_words(candidate) <= {"helsinki"}:
+        return None
+    return candidate[:100]
 
 
 def rank_venues_by_sun(
