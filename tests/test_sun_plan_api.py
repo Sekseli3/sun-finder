@@ -248,6 +248,7 @@ class SunPlanApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("sun_score", facts["recommendations"][0])
         self.assertNotIn("ranking_score", facts["recommendations"][0])
         self.assertNotIn("outdoor_note", facts["recommendations"][0])
+        self.assertEqual(facts["recommendations"][0]["distance_from"], "Eerikinkatu")
 
 
 if __name__ == "__main__":

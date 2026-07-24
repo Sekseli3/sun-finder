@@ -428,9 +428,10 @@ function renderSunPlan(payload) {
   const planMode = String(payload?.meta?.plan_mode || 'sun');
   const windowLabel = String(payload?.request?.window_label || '');
   const anchorName = String(payload?.request?.anchor?.name || 'Current map view');
-  const anchorLabel = anchorName === 'Current map view' ? 'Map centre' : `Near ${anchorName}`;
+  const distanceOrigin = anchorName === 'Current map view' ? 'map centre' : anchorName;
+  const anchorLabel = `From ${distanceOrigin}`;
   elements['sun-planner-window'].textContent = windowLabel
-    ? `${anchorLabel} · Plan time · ${windowLabel}`
+    ? `${anchorLabel} · ${windowLabel}`
     : anchorLabel;
   elements['sun-planner-window'].hidden = false;
   elements['sun-planner-answer'].textContent = String(payload.answer || 'Here are the closest sunny options.');
@@ -462,7 +463,7 @@ function renderSunPlan(payload) {
     const exposure = planMode === 'building_unavailable'
       ? 'nearby fallback'
       : String(result.exposure || 'sun check unavailable');
-    detail.textContent = `${exposure} · ${formatVenueDistance(result.distance_meters)}`;
+    detail.textContent = `${exposure} · ${formatVenueDistance(result.distance_meters, distanceOrigin)}`;
     copy.append(name, detail);
     choose.append(copy);
     choose.addEventListener('click', () => {
@@ -509,10 +510,11 @@ function renderSunPlan(payload) {
   elements['sun-planner-response'].hidden = false;
 }
 
-function formatVenueDistance(distance) {
+function formatVenueDistance(distance, origin = 'map centre') {
   const meters = Number(distance);
   if (!Number.isFinite(meters)) return 'nearby';
-  return meters < 1_000 ? `${Math.round(meters)} m away` : `${(meters / 1_000).toFixed(1)} km away`;
+  const label = meters < 1_000 ? `${Math.round(meters)} m` : `${(meters / 1_000).toFixed(1)} km`;
+  return `${label} from ${origin}`;
 }
 
 function setSunPlannerLoading(isLoading) {

@@ -663,6 +663,7 @@ def planner_language_facts(
                 "name": recommendation["venue"]["name"],
                 "area": recommendation["venue"]["area"],
                 "distance_meters": recommendation["distance_meters"],
+                "distance_from": anchor.get("name") or "Current map view",
                 "exposure": recommendation["exposure"],
                 "ranking_basis": recommendation["ranking_basis"],
             }
