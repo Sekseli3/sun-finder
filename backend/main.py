@@ -29,11 +29,11 @@ from fastapi.staticfiles import StaticFiles
 from backend.nowcast import direct_sun_nowcast, unavailable_direct_sun_nowcast
 from backend.sun_planner import (
     AssistantSettings,
-    OllamaClient,
     OllamaUnavailableError,
     RetrievedVenueDocument,
     SunPlanRequest,
     VenueRetriever,
+    build_assistant_client,
     fallback_anchor_hint,
     load_environment_file,
     load_venues,
@@ -88,7 +88,7 @@ LOCAL_VENUE_INDEX_PATH = APP_ROOT / ".sunfinder" / "venue_index.json"
 
 load_environment_file(APP_ROOT / ".env")
 assistant_settings = AssistantSettings.from_environment()
-assistant_client = OllamaClient(assistant_settings)
+assistant_client = build_assistant_client(assistant_settings)
 venue_catalogue = load_venues(VENUE_CATALOGUE_PATH)
 venue_retriever = VenueRetriever(
     venues=venue_catalogue,
@@ -1270,7 +1270,7 @@ async def conditions(
 
 @app.get("/api/sun-planner/status")
 async def sun_planner_status() -> dict[str, Any]:
-    """Report whether the optional local Ollama planner is ready for this process."""
+    """Report whether the optional local planner engine is ready for this process."""
     if not assistant_settings.enabled:
         return {
             "enabled": False,
@@ -1280,23 +1280,30 @@ async def sun_planner_status() -> dict[str, Any]:
     try:
         installed_models = await asyncio.to_thread(assistant_client.available_models)
     except OllamaUnavailableError:
+        engine_name = "vLLM" if assistant_settings.provider == "vllm" else "Ollama"
         return {
             "enabled": True,
             "ready": False,
-            "reason": "Start Ollama locally to use the outing planner.",
+            "reason": f"Start {engine_name} locally to use the outing planner.",
         }
     required_models = (assistant_settings.chat_model, assistant_settings.embedding_model)
     missing_models = [model for model in required_models if model not in installed_models]
     if missing_models:
+        reason = (
+            "Start vLLM with the configured chat and embedding models before using it."
+            if assistant_settings.provider == "vllm"
+            else "Pull the local planner models before using it."
+        )
         return {
             "enabled": True,
             "ready": False,
-            "reason": "Pull the local planner models before using it.",
+            "reason": reason,
             "missing_models": missing_models,
         }
     return {
         "enabled": True,
         "ready": True,
+        "provider": assistant_settings.provider,
         "catalogue_size": len(venue_catalogue),
         "chat_model": assistant_settings.chat_model,
         "embedding_model": assistant_settings.embedding_model,

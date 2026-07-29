@@ -4,11 +4,14 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.sun_planner import (
     AssistantSettings,
+    VllmClient,
     Venue,
     VenueRetriever,
+    build_assistant_client,
     cosine_similarity,
     fallback_anchor_hint,
     load_venues,
@@ -174,6 +177,82 @@ class SunPlannerTests(unittest.TestCase):
 
         self.assertEqual(matches[0].venue_id, "sunny-cafe")
         self.assertGreater(cosine_similarity([1, 0], [1, 0]), cosine_similarity([1, 0], [0, 1]))
+
+    def test_vllm_client_uses_json_schema_and_disables_qwen_thinking(self) -> None:
+        settings = AssistantSettings(
+            enabled=True,
+            ollama_base_url="http://unused.invalid",
+            chat_model="Qwen/Qwen3-8B",
+            embedding_model="Qwen/Qwen3-Embedding-0.6B",
+            timeout_seconds=1,
+            provider="vllm",
+            vllm_chat_base_url="http://vllm-chat.test/v1",
+            vllm_embedding_base_url="http://vllm-embed.test/v1",
+        )
+        client = VllmClient(settings)
+        model_response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"anchor_query":"Storyville","requested_time":"2026-07-30T13:00:00+03:00","time_relation":"at","venue_kind":"cafe"}'
+                    }
+                }
+            ]
+        }
+        with patch.object(client, "_request", return_value=model_response) as request:
+            intent = client.structured_intent(
+                message="Coffee near Storyville tomorrow at 1pm",
+                current_time=datetime.fromisoformat("2026-07-29T10:00:00+03:00"),
+                selected_time=datetime.fromisoformat("2026-07-29T10:00:00+03:00"),
+            )
+
+        self.assertEqual(intent.anchor_query, "Storyville")
+        self.assertEqual(intent.venue_kind, "cafe")
+        body = request.call_args.args[2]
+        self.assertEqual(request.call_args.args[:2], ("http://vllm-chat.test/v1", "/chat/completions"))
+        self.assertEqual(body["response_format"]["type"], "json_schema")
+        self.assertEqual(body["response_format"]["json_schema"]["name"], "sun_plan_intent")
+        self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(body["max_tokens"], 256)
+
+    def test_vllm_embeddings_are_sorted_by_api_index(self) -> None:
+        settings = AssistantSettings(
+            enabled=True,
+            ollama_base_url="http://unused.invalid",
+            chat_model="Qwen/Qwen3-8B",
+            embedding_model="Qwen/Qwen3-Embedding-0.6B",
+            timeout_seconds=1,
+            provider="vllm",
+            vllm_embedding_base_url="http://vllm-embed.test/v1",
+        )
+        client = VllmClient(settings)
+        response = {
+            "data": [
+                {"index": 1, "embedding": [0.3, 0.4]},
+                {"index": 0, "embedding": [0.1, 0.2]},
+            ]
+        }
+        with patch.object(client, "_request", return_value=response) as request:
+            vectors = client.embed(["first", "second"])
+
+        self.assertEqual(vectors, [[0.1, 0.2], [0.3, 0.4]])
+        self.assertEqual(request.call_args.args[:2], ("http://vllm-embed.test/v1", "/embeddings"))
+        self.assertEqual(request.call_args.args[2]["model"], "Qwen/Qwen3-Embedding-0.6B")
+
+    def test_provider_factory_keeps_ollama_default_and_can_select_vllm(self) -> None:
+        ollama_settings = AssistantSettings(True, "http://localhost:11434", "chat", "embed", 1)
+        vllm_settings = AssistantSettings(True, "http://localhost:11434", "chat", "embed", 1, provider="vllm")
+
+        self.assertEqual(type(build_assistant_client(ollama_settings)).__name__, "OllamaClient")
+        self.assertIsInstance(build_assistant_client(vllm_settings), VllmClient)
+
+    def test_vllm_environment_uses_hugging_face_model_defaults(self) -> None:
+        with patch.dict("os.environ", {"SUNFINDER_LLM_PROVIDER": "vllm"}, clear=True):
+            settings = AssistantSettings.from_environment()
+
+        self.assertEqual(settings.provider, "vllm")
+        self.assertEqual(settings.chat_model, "Qwen/Qwen3-8B")
+        self.assertEqual(settings.embedding_model, "Qwen/Qwen3-Embedding-0.6B")
 
 
 if __name__ == "__main__":

@@ -76,6 +76,74 @@ Try a request like:
 
 The planner uses the selected map time and map centre as context. It does not train on your requests.
 
+### Benchmark the planner before changing models
+
+The fixed Helsinki intent suite gives Ollama and a future vLLM setup the same 31 requests and the same expected place, time, deadline, and venue-type fields. It does not call weather, building, or place-search APIs, so a model-serving comparison stays repeatable.
+
+```sh
+make assistant-benchmark
+```
+
+The command writes a detailed report under `.sunfinder/benchmarks/`. Run several warm passes before comparing providers:
+
+```sh
+make assistant-benchmark BENCHMARK_ARGS='--repeat 3 --label ollama-warm'
+```
+
+The terminal summary reports whole-case accuracy, field accuracy, median latency, and p95 latency. Keep the JSON output and compare it with vLLM using the same case file and repeat count.
+
+### Optional vLLM backend
+
+vLLM is an alternative local GPU serving engine. It changes only how the two Qwen models are served. The browser still talks to FastAPI on port `4173`, and vLLM stays private on `127.0.0.1`.
+
+First make a baseline while `.env` still says `SUNFINDER_LLM_PROVIDER=ollama`:
+
+```sh
+make assistant-benchmark BENCHMARK_ARGS='--repeat 3 --label ollama-warm'
+```
+
+On the GPU PC, install vLLM in its own environment. Keep it out of `requirements.txt`, since the public Render service does not have a GPU:
+
+```sh
+python3 -m venv .vllm-venv
+source .vllm-venv/bin/activate
+python3 -m pip install --upgrade pip
+python3 -m pip install vllm
+```
+
+The standard Qwen3 8B model needs much more VRAM than Ollama's 5.2 GB quantized model, so choose a model and quantization that actually fit your GPU before starting both services.
+
+```sh
+make vllm-chat
+```
+
+Then switch the provider in `.env`:
+
+```text
+SUNFINDER_LLM_PROVIDER=vllm
+SUNFINDER_VLLM_CHAT_BASE_URL=http://127.0.0.1:8000/v1
+SUNFINDER_VLLM_EMBEDDING_BASE_URL=http://127.0.0.1:8001/v1
+SUNFINDER_VLLM_API_KEY=sunfinder-local
+SUNFINDER_VLLM_CHAT_MODEL=Qwen/Qwen3-8B
+SUNFINDER_VLLM_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+```
+
+You can now run the intent benchmark against the chat server alone. This is the cleanest first comparison because it needs no embedding GPU memory:
+
+```sh
+make assistant-benchmark BENCHMARK_ARGS='--repeat 3 --label vllm-chat-warm'
+```
+
+If that quality and latency result looks good, start the embedding server in a second terminal, rebuild the embeddings because their model fingerprint changes, then restart the FastAPI app:
+
+```sh
+make vllm-embeddings
+make assistant-index
+make assistant-run
+```
+
+Compare the two JSON reports under `.sunfinder/benchmarks/`. Whole-case accuracy tells you whether the planner still understands requests. Median and p95 latency show the typical and slow-tail model response time. This is only the LLM extraction benchmark, not a measurement of live building or weather API time.
+
 ## How one planner request moves through the app
 
 ![Animated request flow from prompt through the two Qwen models, Python facts, deterministic ranking, and the browser response](docs/request-flow.gif)

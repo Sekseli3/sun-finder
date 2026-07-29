@@ -1,0 +1,228 @@
+{
+  "schema_version": 1,
+  "name": "Helsinki planner intent benchmark",
+  "description": "Synthetic but realistic Helsinki requests for comparing local LLM providers. The fixed context keeps relative dates and selected map time reproducible.",
+  "default_context": {
+    "current_time": "2026-07-29T10:00:00+03:00",
+    "selected_time": "2026-07-29T10:00:00+03:00"
+  },
+  "cases": [
+    {
+      "id": "current-map-coffee-no-time",
+      "description": "Uses the map centre when neither a place nor a time is supplied.",
+      "tags": ["fallback", "cafe", "no-time"],
+      "message": "I want a coffee and some sun nearby.",
+      "expected": {"anchor_query": null, "requested_time": null, "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "current-map-sun-no-time",
+      "description": "Keeps an open-ended sun request at the current map context.",
+      "tags": ["fallback", "general", "no-time"],
+      "message": "Where can I catch some sun?",
+      "expected": {"anchor_query": null, "requested_time": null, "time_relation": "at", "venue_kind": "terrace_or_cafe"}
+    },
+    {
+      "id": "storyville-tomorrow-lunch",
+      "description": "Extracts an English venue anchor and a relative date.",
+      "tags": ["anchor", "relative-date", "cafe"],
+      "message": "Sunny place near Storyville Töölö tomorrow at 1pm.",
+      "expected": {"anchor_query": {"contains": ["storyville"]}, "requested_time": "2026-07-30T13:00:00+03:00", "time_relation": "at", "venue_kind": "terrace_or_cafe"}
+    },
+    {
+      "id": "storyville-beer-tomorrow-lunch",
+      "description": "Classifies lager as a bar request while keeping the Storyville anchor.",
+      "tags": ["anchor", "relative-date", "beer"],
+      "message": "I want a cold lager near Storyville tomorrow at 1pm.",
+      "expected": {"anchor_query": {"contains": ["storyville"]}, "requested_time": "2026-07-30T13:00:00+03:00", "time_relation": "at", "venue_kind": "bar"}
+    },
+    {
+      "id": "karhupuisto-departure-deadline",
+      "description": "Treats a departure time as the end of the desired sun window.",
+      "tags": ["anchor", "relative-date", "before", "beer"],
+      "message": "I am leaving Helsinki from Karhupuisto tomorrow at 2pm and want a lager before.",
+      "expected": {"anchor_query": {"contains": ["karhupuisto"]}, "requested_time": "2026-07-30T14:00:00+03:00", "time_relation": "before", "venue_kind": "bar"}
+    },
+    {
+      "id": "kaivopuisto-departure-deadline",
+      "description": "Handles a same-day departure point and drinking request.",
+      "tags": ["anchor", "before", "beer"],
+      "message": "I leave Kaivopuisto at 16 and want a beer in the sun before that.",
+      "expected": {"anchor_query": {"contains": ["kaivopuisto"]}, "requested_time": "2026-07-29T16:00:00+03:00", "time_relation": "before", "venue_kind": "bar"}
+    },
+    {
+      "id": "eerikinkatu-friday-after-work",
+      "description": "Maps after work to 18:00 on an explicit relative weekday.",
+      "tags": ["anchor", "relative-date", "after-work", "cafe"],
+      "message": "Coffee on Eerikinkatu this Friday after work.",
+      "expected": {"anchor_query": {"contains": ["eerikinkatu"]}, "requested_time": "2026-07-31T18:00:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "hakaniemi-tomorrow-morning",
+      "description": "Extracts a neighbourhood and morning time.",
+      "tags": ["anchor", "relative-date", "cafe"],
+      "message": "Morning coffee near Hakaniemi tomorrow at 9.",
+      "expected": {"anchor_query": {"contains": ["hakaniemi"]}, "requested_time": "2026-07-30T09:00:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "kallio-saturday-noon",
+      "description": "Handles a weekend weekday name and noon.",
+      "tags": ["anchor", "relative-date", "cafe"],
+      "message": "Find me coffee in Kallio on Saturday at noon.",
+      "expected": {"anchor_query": {"contains": ["kallio"]}, "requested_time": "2026-08-01T12:00:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "bar-mendocino-beer",
+      "description": "Uses a named venue as an anchor without an explicit time.",
+      "tags": ["anchor", "beer", "no-time"],
+      "message": "I want a beer near Bar Mendocino.",
+      "expected": {"anchor_query": {"contains": ["bar", "mendocino"]}, "requested_time": null, "time_relation": "at", "venue_kind": "bar"}
+    },
+    {
+      "id": "oodi-tomorrow-tea",
+      "description": "Treats tea as a cafe request.",
+      "tags": ["anchor", "relative-date", "cafe"],
+      "message": "Tea near Oodi tomorrow at 15.",
+      "expected": {"anchor_query": {"contains": ["oodi"]}, "requested_time": "2026-07-30T15:00:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "punavuori-friday-bakery",
+      "description": "Treats bakery as a cafe request.",
+      "tags": ["anchor", "relative-date", "cafe"],
+      "message": "A bakery around Punavuori this Friday at 11.",
+      "expected": {"anchor_query": {"contains": ["punavuori"]}, "requested_time": "2026-07-31T11:00:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "bad-mood-is-not-a-location",
+      "description": "Does not mistake the word in for a location phrase.",
+      "tags": ["fallback", "no-anchor", "general"],
+      "message": "I am in a bad mood and need a refreshment.",
+      "expected": {"anchor_query": null, "requested_time": null, "time_relation": "at", "venue_kind": "terrace_or_cafe"}
+    },
+    {
+      "id": "here-lager-map-centre",
+      "description": "Keeps here as map-centre context instead of inventing a location.",
+      "tags": ["fallback", "beer", "no-time"],
+      "message": "I just want a cold lager here.",
+      "expected": {"anchor_query": null, "requested_time": null, "time_relation": "at", "venue_kind": "bar"}
+    },
+    {
+      "id": "finnish-kamppi-coffee",
+      "description": "Tests a Finnish inflected area name and clock notation.",
+      "tags": ["finnish", "anchor", "relative-date", "cafe"],
+      "message": "Aurinkoinen kahvi lähellä Kamppia huomenna klo 14.",
+      "expected": {"anchor_query": {"contains": ["kamppi"]}, "requested_time": "2026-07-30T14:00:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "finnish-kaivopuisto-beer",
+      "description": "Tests Finnish place inflection and a same-day time.",
+      "tags": ["finnish", "anchor", "beer"],
+      "message": "Olut Kaivopuistossa tänään klo 17.",
+      "expected": {"anchor_query": {"contains": ["kaivopuisto"]}, "requested_time": "2026-07-29T17:00:00+03:00", "time_relation": "at", "venue_kind": "bar"}
+    },
+    {
+      "id": "finnish-karhupuisto-departure",
+      "description": "Tests Finnish departure language and before semantics.",
+      "tags": ["finnish", "anchor", "relative-date", "before", "beer"],
+      "message": "Lähden Karhupuistosta huomenna klo 16 ja haluan lagerin ennen sitä.",
+      "expected": {"anchor_query": {"contains": ["karhupuisto"]}, "requested_time": "2026-07-30T16:00:00+03:00", "time_relation": "before", "venue_kind": "bar"}
+    },
+    {
+      "id": "toolonlahti-after-work",
+      "description": "Tests an accented Finnish anchor in an English request.",
+      "tags": ["anchor", "relative-date", "after-work", "cafe"],
+      "message": "Coffee near Töölönlahti tomorrow after work.",
+      "expected": {"anchor_query": {"contains": ["toolonlahti"]}, "requested_time": "2026-07-30T18:00:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "merihaka-map-time",
+      "description": "Uses a place anchor but leaves an unspecified time to the selected map time.",
+      "tags": ["anchor", "general", "no-time"],
+      "message": "I need a sunny place near Merihaka.",
+      "expected": {"anchor_query": {"contains": ["merihaka"]}, "requested_time": null, "time_relation": "at", "venue_kind": "terrace_or_cafe"}
+    },
+    {
+      "id": "kallio-friday-clock",
+      "description": "Tests a half-hour clock value with an explicit Friday.",
+      "tags": ["anchor", "relative-date", "cafe"],
+      "message": "Find a bakery around Kallio this Friday at 13:30.",
+      "expected": {"anchor_query": {"contains": ["kallio"]}, "requested_time": "2026-07-31T13:30:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "eerikinpippuri-beer",
+      "description": "Separates location extraction from later place-search resolution.",
+      "tags": ["anchor", "relative-date", "beer"],
+      "message": "I want a beer near Eerikinpippuri tomorrow at 18.",
+      "expected": {"anchor_query": {"contains": ["eerikinpippuri"]}, "requested_time": "2026-07-30T18:00:00+03:00", "time_relation": "at", "venue_kind": "bar"}
+    },
+    {
+      "id": "bulevardi-address-departure",
+      "description": "Uses a street address as the departure anchor.",
+      "tags": ["address", "anchor", "relative-date", "before", "cafe"],
+      "message": "Before I leave from Bulevardi 20 at 15 tomorrow, I want coffee in the sun.",
+      "expected": {"anchor_query": {"contains": ["bulevardi", "20"]}, "requested_time": "2026-07-30T15:00:00+03:00", "time_relation": "before", "venue_kind": "cafe"}
+    },
+    {
+      "id": "storyville-before-tonight",
+      "description": "Tests tonight and an explicit before-go deadline.",
+      "tags": ["anchor", "same-day", "before", "beer"],
+      "message": "Before I go to Storyville at 20 tonight, where can I have a drink?",
+      "expected": {"anchor_query": {"contains": ["storyville"]}, "requested_time": "2026-07-29T20:00:00+03:00", "time_relation": "before", "venue_kind": "bar"}
+    },
+    {
+      "id": "storyville-after-work",
+      "description": "Tests a named venue with after-work shorthand.",
+      "tags": ["anchor", "relative-date", "after-work", "general"],
+      "message": "I want to catch some rays near Storyville tomorrow after work.",
+      "expected": {"anchor_query": {"contains": ["storyville"]}, "requested_time": "2026-07-30T18:00:00+03:00", "time_relation": "at", "venue_kind": "terrace_or_cafe"}
+    },
+    {
+      "id": "hietalahti-fixed-date",
+      "description": "Uses an explicit calendar date instead of relative date parsing.",
+      "tags": ["anchor", "absolute-date", "cafe"],
+      "message": "I want coffee near Hietalahti on 1 August at 12:45.",
+      "expected": {"anchor_query": {"contains": ["hietalahti"]}, "requested_time": "2026-08-01T12:45:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "katajanokka-same-day",
+      "description": "Tests a same-day explicit clock time.",
+      "tags": ["anchor", "same-day", "general"],
+      "message": "Find a sunny place in Katajanokka at 17:00.",
+      "expected": {"anchor_query": {"contains": ["katajanokka"]}, "requested_time": "2026-07-29T17:00:00+03:00", "time_relation": "at", "venue_kind": "terrace_or_cafe"}
+    },
+    {
+      "id": "esplanadi-cocktails",
+      "description": "Classifies cocktails as a bar request.",
+      "tags": ["anchor", "relative-date", "beer"],
+      "message": "Cocktails around Esplanadi tomorrow at 19.",
+      "expected": {"anchor_query": {"contains": ["esplanadi"]}, "requested_time": "2026-07-30T19:00:00+03:00", "time_relation": "at", "venue_kind": "bar"}
+    },
+    {
+      "id": "cold-lager-no-location",
+      "description": "Tests a concise drinking request with no implied anchor.",
+      "tags": ["fallback", "beer", "no-time"],
+      "message": "I just want a cold lager.",
+      "expected": {"anchor_query": null, "requested_time": null, "time_relation": "at", "venue_kind": "bar"}
+    },
+    {
+      "id": "coffee-after-work-map-centre",
+      "description": "Uses after-work time while retaining the current map centre.",
+      "tags": ["fallback", "after-work", "cafe"],
+      "message": "Coffee after work, please.",
+      "expected": {"anchor_query": null, "requested_time": "2026-07-29T18:00:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    },
+    {
+      "id": "punavuori-wine",
+      "description": "Classifies wine as a bar request rather than a cafe request.",
+      "tags": ["anchor", "relative-date", "beer"],
+      "message": "Wine near Punavuori tomorrow at 18.",
+      "expected": {"anchor_query": {"contains": ["punavuori"]}, "requested_time": "2026-07-30T18:00:00+03:00", "time_relation": "at", "venue_kind": "bar"}
+    },
+    {
+      "id": "eerikinkulma-thursday-coffee",
+      "description": "Tests a venue-like anchor and weekday name.",
+      "tags": ["anchor", "relative-date", "cafe"],
+      "message": "Coffee near Bar Eerikinkulma on Thursday at 10.",
+      "expected": {"anchor_query": {"contains": ["eerikinkulma"]}, "requested_time": "2026-07-30T10:00:00+03:00", "time_relation": "at", "venue_kind": "cafe"}
+    }
+  ]
+}

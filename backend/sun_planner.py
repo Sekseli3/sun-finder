@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -25,6 +25,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_CHAT_MODEL = "qwen3:8b"
 DEFAULT_EMBEDDING_MODEL = "qwen3-embedding:0.6b"
+DEFAULT_LLM_PROVIDER = "ollama"
+DEFAULT_VLLM_CHAT_BASE_URL = "http://127.0.0.1:8000/v1"
+DEFAULT_VLLM_EMBEDDING_BASE_URL = "http://127.0.0.1:8001/v1"
+DEFAULT_VLLM_API_KEY = "sunfinder-local"
+DEFAULT_VLLM_CHAT_MODEL = "Qwen/Qwen3-8B"
+DEFAULT_VLLM_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 DEFAULT_ASSISTANT_TIMEOUT_SECONDS = 45
 DEFAULT_VENUE_RADIUS_METERS = 2_000
 PLANNER_LOCAL_VENUE_RADIUS_METERS = 1_000
@@ -65,15 +71,32 @@ class AssistantSettings:
     chat_model: str
     embedding_model: str
     timeout_seconds: int
+    provider: Literal["ollama", "vllm"] = "ollama"
+    vllm_chat_base_url: str = DEFAULT_VLLM_CHAT_BASE_URL
+    vllm_embedding_base_url: str = DEFAULT_VLLM_EMBEDDING_BASE_URL
+    vllm_api_key: str = DEFAULT_VLLM_API_KEY
 
     @classmethod
     def from_environment(cls) -> "AssistantSettings":
+        provider = os.environ.get("SUNFINDER_LLM_PROVIDER", DEFAULT_LLM_PROVIDER).strip().casefold()
+        if provider not in {"ollama", "vllm"}:
+            raise ValueError("SUNFINDER_LLM_PROVIDER must be either ollama or vllm")
+        if provider == "vllm":
+            chat_model = os.environ.get("SUNFINDER_VLLM_CHAT_MODEL", DEFAULT_VLLM_CHAT_MODEL)
+            embedding_model = os.environ.get("SUNFINDER_VLLM_EMBEDDING_MODEL", DEFAULT_VLLM_EMBEDDING_MODEL)
+        else:
+            chat_model = os.environ.get("SUNFINDER_CHAT_MODEL", DEFAULT_CHAT_MODEL)
+            embedding_model = os.environ.get("SUNFINDER_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
         return cls(
             enabled=environment_flag("SUNFINDER_ASSISTANT_ENABLED"),
             ollama_base_url=os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).rstrip("/"),
-            chat_model=os.environ.get("SUNFINDER_CHAT_MODEL", DEFAULT_CHAT_MODEL),
-            embedding_model=os.environ.get("SUNFINDER_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+            chat_model=chat_model,
+            embedding_model=embedding_model,
             timeout_seconds=int(os.environ.get("SUNFINDER_ASSISTANT_TIMEOUT_SECONDS", DEFAULT_ASSISTANT_TIMEOUT_SECONDS)),
+            provider=provider,
+            vllm_chat_base_url=os.environ.get("SUNFINDER_VLLM_CHAT_BASE_URL", DEFAULT_VLLM_CHAT_BASE_URL).rstrip("/"),
+            vllm_embedding_base_url=os.environ.get("SUNFINDER_VLLM_EMBEDDING_BASE_URL", DEFAULT_VLLM_EMBEDDING_BASE_URL).rstrip("/"),
+            vllm_api_key=os.environ.get("SUNFINDER_VLLM_API_KEY", DEFAULT_VLLM_API_KEY),
         )
 
 
@@ -123,6 +146,80 @@ class RetrievedVenueDocument:
     source_url: str
 
 
+class PlannerModelClient(Protocol):
+    """The narrow client contract shared by Ollama and vLLM."""
+
+    settings: AssistantSettings
+
+    def available_models(self) -> set[str]: ...
+
+    def available_chat_models(self) -> set[str]: ...
+
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+    def structured_intent(self, *, message: str, selected_time: datetime, current_time: datetime) -> SunPlanIntent: ...
+
+    def write_answer(self, *, request: str, facts: dict[str, Any], retrieved_documents: list[RetrievedVenueDocument]) -> str: ...
+
+
+def structured_intent_prompt(*, message: str, selected_time: datetime, current_time: datetime, schema: dict[str, Any]) -> str:
+    return "\n".join(
+        (
+            "Extract a Helsinki terrace or cafe outing request.",
+            f"Current Helsinki time: {current_time.isoformat()}",
+            f"Map selected Helsinki time: {selected_time.isoformat()}",
+            "Use requested_time only when the person supplied a time.",
+            "Interpret after work as 18:00 Helsinki time.",
+            "Use anchor_query for a place, area, address, starting point, or departure point explicitly mentioned.",
+            "For example, 'leaving from Karhupuisto' means anchor_query is 'Karhupuisto'.",
+            "For here, nearby, or no location, leave anchor_query null.",
+            "For 'before 14:00' or 'leaving at 14:00 and wanting sun before', set requested_time to 14:00 and time_relation to 'before'.",
+            "Otherwise use time_relation 'at'.",
+            "Use venue_kind 'bar' for beer, lager, wine, cocktails, or other drinking requests.",
+            "Use venue_kind 'cafe' for coffee, tea, cake, or bakery requests.",
+            "Use venue_kind 'terrace_or_cafe' when the venue type is not clear.",
+            "Return only JSON matching this schema:",
+            json.dumps(schema, ensure_ascii=False),
+            "Request:",
+            message,
+        )
+    )
+
+
+def recommendation_answer_prompt(*, request: str, facts: dict[str, Any], retrieved_documents: list[RetrievedVenueDocument]) -> str:
+    sources = [
+        {
+            "venue_id": document.venue_id,
+            "text": document.text,
+            "source_url": document.source_url,
+        }
+        for document in retrieved_documents
+    ]
+    return "\n".join(
+        (
+            "Write a short, friendly Helsinki sun outing recommendation.",
+            "Use only the facts and retrieved venue notes below.",
+            "Do not invent opening hours, menu details, terrace size, weather, or local sun data.",
+            "Never call a ranking score a sun score or a weather probability.",
+            "Venue exposure comes from projected building shade. Do not attribute 'sunny through the next hour' or building shade to the city-wide weather estimate.",
+            "A direct-sun probability is city-wide, covers the next hour, and only applies to an open point.",
+            "If building data is unavailable, do not call any venue sunny or shaded. Say the choices are nearby, not confirmed sun spots.",
+            "Do not mention terrace availability, outdoor seating, menus, or opening hours unless those facts are explicitly supplied.",
+            "Do not add generic advice such as checking local conditions before going.",
+            "Only recommend venues listed in the deterministic facts. Retrieved notes support those venues only.",
+            "Distances in deterministic facts are straight-line distances from facts.anchor.name. When mentioning a distance, name that anchor.",
+            "The interface shows planned_window separately. Do not say 'right now' or 'the next hour' without that exact window.",
+            "Give the top recommendation first and keep the answer under 130 words.",
+            "Original request:",
+            request,
+            "Deterministic facts:",
+            json.dumps(facts, ensure_ascii=False),
+            "Retrieved venue notes:",
+            json.dumps(sources, ensure_ascii=False),
+        )
+    )
+
+
 class OllamaClient:
     """Small stdlib client so the local model protocol stays visible in code."""
 
@@ -139,6 +236,9 @@ class OllamaClient:
             for model in models
             if isinstance(model, dict) and isinstance(model.get("name"), str)
         }
+
+    def available_chat_models(self) -> set[str]:
+        return self.available_models()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         payload = self._post(
@@ -163,26 +263,11 @@ class OllamaClient:
 
     def structured_intent(self, *, message: str, selected_time: datetime, current_time: datetime) -> SunPlanIntent:
         schema = SunPlanIntent.model_json_schema()
-        prompt = "\n".join(
-            (
-                "Extract a Helsinki terrace or cafe outing request.",
-                f"Current Helsinki time: {current_time.isoformat()}",
-                f"Map selected Helsinki time: {selected_time.isoformat()}",
-                "Use requested_time only when the person supplied a time.",
-                "Interpret after work as 18:00 Helsinki time.",
-                "Use anchor_query for a place, area, address, starting point, or departure point explicitly mentioned.",
-                "For example, 'leaving from Karhupuisto' means anchor_query is 'Karhupuisto'.",
-                "For here, nearby, or no location, leave anchor_query null.",
-                "For 'before 14:00' or 'leaving at 14:00 and wanting sun before', set requested_time to 14:00 and time_relation to 'before'.",
-                "Otherwise use time_relation 'at'.",
-                "Use venue_kind 'bar' for beer, lager, wine, cocktails, or other drinking requests.",
-                "Use venue_kind 'cafe' for coffee, tea, cake, or bakery requests.",
-                "Use venue_kind 'terrace_or_cafe' when the venue type is not clear.",
-                "Return only JSON matching this schema:",
-                json.dumps(schema, ensure_ascii=False),
-                "Request:",
-                message,
-            )
+        prompt = structured_intent_prompt(
+            message=message,
+            selected_time=selected_time,
+            current_time=current_time,
+            schema=schema,
         )
         payload = self._post(
             "/api/chat",
@@ -208,36 +293,10 @@ class OllamaClient:
             raise OllamaUnavailableError("The local model returned an invalid plan") from error
 
     def write_answer(self, *, request: str, facts: dict[str, Any], retrieved_documents: list[RetrievedVenueDocument]) -> str:
-        sources = [
-            {
-                "venue_id": document.venue_id,
-                "text": document.text,
-                "source_url": document.source_url,
-            }
-            for document in retrieved_documents
-        ]
-        prompt = "\n".join(
-            (
-                "Write a short, friendly Helsinki sun outing recommendation.",
-                "Use only the facts and retrieved venue notes below.",
-                "Do not invent opening hours, menu details, terrace size, weather, or local sun data.",
-                "Never call a ranking score a sun score or a weather probability.",
-                "Venue exposure comes from projected building shade. Do not attribute 'sunny through the next hour' or building shade to the city-wide weather estimate.",
-                "A direct-sun probability is city-wide, covers the next hour, and only applies to an open point.",
-                "If building data is unavailable, do not call any venue sunny or shaded. Say the choices are nearby, not confirmed sun spots.",
-                "Do not mention terrace availability, outdoor seating, menus, or opening hours unless those facts are explicitly supplied.",
-                "Do not add generic advice such as checking local conditions before going.",
-                "Only recommend venues listed in the deterministic facts. Retrieved notes support those venues only.",
-                "Distances in deterministic facts are straight-line distances from facts.anchor.name. When mentioning a distance, name that anchor.",
-                "The interface shows planned_window separately. Do not say 'right now' or 'the next hour' without that exact window.",
-                "Give the top recommendation first and keep the answer under 130 words.",
-                "Original request:",
-                request,
-                "Deterministic facts:",
-                json.dumps(facts, ensure_ascii=False),
-                "Retrieved venue notes:",
-                json.dumps(sources, ensure_ascii=False),
-            )
+        prompt = recommendation_answer_prompt(
+            request=request,
+            facts=facts,
+            retrieved_documents=retrieved_documents,
         )
         payload = self._post(
             "/api/chat",
@@ -280,10 +339,208 @@ class OllamaClient:
         return payload
 
 
+class VllmClient:
+    """OpenAI-compatible vLLM client for the same narrow planner contract."""
+
+    def __init__(self, settings: AssistantSettings) -> None:
+        self.settings = settings
+
+    def available_models(self) -> set[str]:
+        base_urls = {self.settings.vllm_chat_base_url, self.settings.vllm_embedding_base_url}
+        models: set[str] = set()
+        for base_url in base_urls:
+            models.update(self._models_at(base_url))
+        return models
+
+    def available_chat_models(self) -> set[str]:
+        return self._models_at(self.settings.vllm_chat_base_url)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        payload = self._request(
+            self.settings.vllm_embedding_base_url,
+            "/embeddings",
+            {
+                "model": self.settings.embedding_model,
+                "input": texts,
+                "encoding_format": "float",
+            },
+        )
+        entries = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(entries, list) or len(entries) != len(texts):
+            raise OllamaUnavailableError("vLLM returned invalid embedding data")
+        vectors_by_index: dict[int, list[float]] = {}
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("index"), int):
+                raise OllamaUnavailableError("vLLM returned an embedding without an index")
+            embedding = entry.get("embedding")
+            if not isinstance(embedding, list) or not embedding:
+                raise OllamaUnavailableError("vLLM returned an empty embedding")
+            try:
+                vector = [float(value) for value in embedding]
+            except (TypeError, ValueError) as error:
+                raise OllamaUnavailableError("vLLM returned a non-numeric embedding") from error
+            if not all(math.isfinite(value) for value in vector):
+                raise OllamaUnavailableError("vLLM returned a non-finite embedding")
+            vectors_by_index[entry["index"]] = vector
+        try:
+            return [vectors_by_index[index] for index in range(len(texts))]
+        except KeyError as error:
+            raise OllamaUnavailableError("vLLM returned incomplete embedding data") from error
+
+    def structured_intent(self, *, message: str, selected_time: datetime, current_time: datetime) -> SunPlanIntent:
+        schema = SunPlanIntent.model_json_schema()
+        prompt = structured_intent_prompt(
+            message=message,
+            selected_time=selected_time,
+            current_time=current_time,
+            schema=schema,
+        )
+        content = self._chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a careful structured data extractor. Never add facts that are not in the request.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=256,
+            schema=schema,
+        )
+        try:
+            return SunPlanIntent.model_validate_json(content)
+        except ValidationError as error:
+            raise OllamaUnavailableError("The local vLLM model returned an invalid plan") from error
+
+    def write_answer(self, *, request: str, facts: dict[str, Any], retrieved_documents: list[RetrievedVenueDocument]) -> str:
+        prompt = recommendation_answer_prompt(
+            request=request,
+            facts=facts,
+            retrieved_documents=retrieved_documents,
+        )
+        content = self._chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a cautious recommendation writer. Facts from the app always win over fluent wording.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=384,
+        ).strip()
+        if not content:
+            raise OllamaUnavailableError("The local vLLM model returned an empty answer")
+        return content
+
+    def _chat(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        schema: dict[str, Any] | None = None,
+    ) -> str:
+        body: dict[str, Any] = {
+            "model": self.settings.chat_model,
+            "messages": messages,
+            "stream": False,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            # Qwen3 thinks by default. The planner needs short structured
+            # extraction and grounded wording, not a visible reasoning trace.
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        if schema is not None:
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "sun_plan_intent",
+                    "schema": schema,
+                },
+            }
+        payload = self._request(self.settings.vllm_chat_base_url, "/chat/completions", body)
+        return vllm_message_content(payload)
+
+    def _models_at(self, base_url: str) -> set[str]:
+        payload = self._request(base_url, "/models", None, method="GET")
+        entries = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            raise OllamaUnavailableError("vLLM did not return its served models")
+        return {
+            str(entry.get("id"))
+            for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+        }
+
+    def _request(
+        self,
+        base_url: str,
+        path: str,
+        body: dict[str, Any] | None,
+        *,
+        method: str = "POST",
+    ) -> dict[str, Any]:
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        if self.settings.vllm_api_key:
+            headers["Authorization"] = f"Bearer {self.settings.vllm_api_key}"
+        request = Request(
+            f"{base_url}{path}",
+            data=data,
+            method=method,
+            headers=headers,
+        )
+        try:
+            with urlopen(request, timeout=self.settings.timeout_seconds) as response:  # noqa: S310 - configured local vLLM endpoint only
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            raise OllamaUnavailableError(vllm_http_error_message(error)) from error
+        except (URLError, TimeoutError, json.JSONDecodeError) as error:
+            raise OllamaUnavailableError("Could not reach the local vLLM service") from error
+        if not isinstance(payload, dict):
+            raise OllamaUnavailableError("vLLM returned an unexpected response")
+        if isinstance(payload.get("error"), str):
+            raise OllamaUnavailableError(payload["error"])
+        return payload
+
+
+def vllm_message_content(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise OllamaUnavailableError("vLLM returned no chat choices")
+    message = choices[0].get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise OllamaUnavailableError("vLLM returned no chat message")
+    return content
+
+
+def vllm_http_error_message(error: HTTPError) -> str:
+    try:
+        raw_detail = error.read().decode("utf-8")
+        payload = json.loads(raw_detail)
+        detail = payload.get("error") if isinstance(payload, dict) else raw_detail
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        detail = ""
+    if isinstance(detail, dict):
+        detail = detail.get("message") or json.dumps(detail, ensure_ascii=False)
+    if isinstance(detail, str) and detail.strip():
+        return f"vLLM returned HTTP {error.code}: {detail.strip()[:300]}"
+    return f"vLLM returned HTTP {error.code}"
+
+
+def build_assistant_client(settings: AssistantSettings) -> PlannerModelClient:
+    """Select the local serving engine without changing planner logic."""
+    if settings.provider == "vllm":
+        return VllmClient(settings)
+    return OllamaClient(settings)
+
+
 class VenueRetriever:
     """A compact local vector index for a deliberately small venue catalogue."""
 
-    def __init__(self, *, venues: tuple[Venue, ...], index_path: Path, client: OllamaClient) -> None:
+    def __init__(self, *, venues: tuple[Venue, ...], index_path: Path, client: PlannerModelClient) -> None:
         self.venues = venues
         self.index_path = index_path
         self.client = client
