@@ -29,7 +29,9 @@ DEFAULT_LLM_PROVIDER = "ollama"
 DEFAULT_VLLM_CHAT_BASE_URL = "http://127.0.0.1:8000/v1"
 DEFAULT_VLLM_EMBEDDING_BASE_URL = "http://127.0.0.1:8001/v1"
 DEFAULT_VLLM_API_KEY = "sunfinder-local"
-DEFAULT_VLLM_CHAT_MODEL = "Qwen/Qwen3-8B"
+# The official AWQ checkpoint keeps the planner at 8B parameters while fitting
+# alongside the embedding service on a 16 GB consumer GPU.
+DEFAULT_VLLM_CHAT_MODEL = "Qwen/Qwen3-8B-AWQ"
 DEFAULT_VLLM_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 DEFAULT_ASSISTANT_TIMEOUT_SECONDS = 45
 DEFAULT_VENUE_RADIUS_METERS = 2_000

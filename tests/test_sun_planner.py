@@ -251,7 +251,7 @@ class SunPlannerTests(unittest.TestCase):
             settings = AssistantSettings.from_environment()
 
         self.assertEqual(settings.provider, "vllm")
-        self.assertEqual(settings.chat_model, "Qwen/Qwen3-8B")
+        self.assertEqual(settings.chat_model, "Qwen/Qwen3-8B-AWQ")
         self.assertEqual(settings.embedding_model, "Qwen/Qwen3-Embedding-0.6B")
 
 

@@ -111,7 +111,7 @@ python3 -m pip install --upgrade pip
 python3 -m pip install vllm
 ```
 
-The standard Qwen3 8B model needs much more VRAM than Ollama's 5.2 GB quantized model, so choose a model and quantization that actually fit your GPU before starting both services.
+The launcher defaults to Qwen's official 4-bit `Qwen/Qwen3-8B-AWQ` checkpoint. It keeps the same 8B model family but leaves room for vLLM's runtime cache on a 16 GB NVIDIA card. The full BF16 checkpoint is about 15.3 GB by itself and cannot run there. The chat server is capped at an 8k-token context and 72% GPU memory use so the embedding server can run beside it later.
 
 ```sh
 make vllm-chat
@@ -124,8 +124,12 @@ SUNFINDER_LLM_PROVIDER=vllm
 SUNFINDER_VLLM_CHAT_BASE_URL=http://127.0.0.1:8000/v1
 SUNFINDER_VLLM_EMBEDDING_BASE_URL=http://127.0.0.1:8001/v1
 SUNFINDER_VLLM_API_KEY=sunfinder-local
-SUNFINDER_VLLM_CHAT_MODEL=Qwen/Qwen3-8B
+SUNFINDER_VLLM_CHAT_MODEL=Qwen/Qwen3-8B-AWQ
 SUNFINDER_VLLM_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
+SUNFINDER_VLLM_CHAT_MAX_MODEL_LEN=8192
+SUNFINDER_VLLM_CHAT_GPU_MEMORY_UTILIZATION=0.72
+SUNFINDER_VLLM_EMBEDDING_MAX_MODEL_LEN=2048
+SUNFINDER_VLLM_EMBEDDING_GPU_MEMORY_UTILIZATION=0.14
 ```
 
 You can now run the intent benchmark against the chat server alone. This is the cleanest first comparison because it needs no embedding GPU memory:
@@ -142,7 +146,7 @@ make assistant-index
 make assistant-run
 ```
 
-Compare the two JSON reports under `.sunfinder/benchmarks/`. Whole-case accuracy tells you whether the planner still understands requests. Median and p95 latency show the typical and slow-tail model response time. This is only the LLM extraction benchmark, not a measurement of live building or weather API time.
+The launcher reserves 14% of the GPU for embeddings. If either server says it cannot fit, lower `SUNFINDER_VLLM_CHAT_GPU_MEMORY_UTILIZATION` first, for example to `0.68`, before reducing the context limit. Compare the two JSON reports under `.sunfinder/benchmarks/`. Whole-case accuracy tells you whether the planner still understands requests. Median and p95 latency show the typical and slow-tail model response time. This is only the LLM extraction benchmark, not a measurement of live building or weather API time.
 
 ## How one planner request moves through the app
 
