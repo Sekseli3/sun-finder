@@ -111,7 +111,7 @@ python3 -m pip install --upgrade pip
 python3 -m pip install vllm
 ```
 
-The launcher defaults to Qwen's official 4-bit `Qwen/Qwen3-8B-AWQ` checkpoint. It keeps the same 8B model family but leaves room for vLLM's runtime cache on a 16 GB NVIDIA card. The full BF16 checkpoint is about 15.3 GB by itself and cannot run there. The chat server is capped at an 8k-token context and 72% GPU memory use so the embedding server can run beside it later.
+The launcher defaults to Qwen's official 4-bit `Qwen/Qwen3-8B-AWQ` checkpoint. It keeps the same 8B model family but leaves room for vLLM's runtime cache on a 16 GB NVIDIA card. The full BF16 checkpoint is about 15.3 GB by itself and cannot run there. The chat server is capped at an 8k-token context and 72% GPU memory use so the embedding server can run beside it later. It also disables the optional FlashInfer sampler by default, which avoids needing a system CUDA toolkit and `nvcc` for this small local workload.
 
 ```sh
 make vllm-chat
@@ -130,6 +130,7 @@ SUNFINDER_VLLM_CHAT_MAX_MODEL_LEN=8192
 SUNFINDER_VLLM_CHAT_GPU_MEMORY_UTILIZATION=0.72
 SUNFINDER_VLLM_EMBEDDING_MAX_MODEL_LEN=2048
 SUNFINDER_VLLM_EMBEDDING_GPU_MEMORY_UTILIZATION=0.14
+VLLM_USE_FLASHINFER_SAMPLER=0
 ```
 
 You can now run the intent benchmark against the chat server alone. This is the cleanest first comparison because it needs no embedding GPU memory:
