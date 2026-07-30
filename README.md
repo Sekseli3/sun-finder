@@ -90,7 +90,7 @@ The command writes a detailed report under `.sunfinder/benchmarks/`. Run several
 make assistant-benchmark BENCHMARK_ARGS='--repeat 3 --label ollama-warm'
 ```
 
-The terminal summary reports whole-case accuracy, field accuracy, median latency, and p95 latency. Keep the JSON output and compare it with vLLM using the same case file and repeat count.
+The terminal summary reports whole-case accuracy, field accuracy, median latency, and p95 latency. Both Ollama and vLLM disable Qwen thinking mode for this test, so the comparison measures the same fast structured-extraction task. Keep the JSON output and compare it with vLLM using the same case file and repeat count.
 
 ### Optional vLLM backend
 

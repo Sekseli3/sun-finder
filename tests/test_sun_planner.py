@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from backend.sun_planner import (
     AssistantSettings,
+    OllamaClient,
     VllmClient,
     Venue,
     VenueRetriever,
@@ -214,6 +215,32 @@ class SunPlannerTests(unittest.TestCase):
         self.assertEqual(body["response_format"]["json_schema"]["name"], "sun_plan_intent")
         self.assertEqual(body["chat_template_kwargs"], {"enable_thinking": False})
         self.assertEqual(body["max_tokens"], 256)
+
+    def test_ollama_client_disables_qwen_thinking_for_planning_and_answers(self) -> None:
+        settings = AssistantSettings(
+            enabled=True,
+            ollama_base_url="http://ollama.test",
+            chat_model="qwen3:8b",
+            embedding_model="qwen3-embedding:0.6b",
+            timeout_seconds=1,
+        )
+        client = OllamaClient(settings)
+        intent_response = {
+            "message": {
+                "content": '{"anchor_query":null,"requested_time":null,"time_relation":"at","venue_kind":"cafe"}'
+            }
+        }
+        answer_response = {"message": {"content": "Try a nearby cafe."}}
+        with patch.object(client, "_post", side_effect=[intent_response, answer_response]) as request:
+            client.structured_intent(
+                message="Coffee nearby",
+                current_time=datetime.fromisoformat("2026-07-29T10:00:00+03:00"),
+                selected_time=datetime.fromisoformat("2026-07-29T10:00:00+03:00"),
+            )
+            client.write_answer(request="Coffee nearby", facts={}, retrieved_documents=[])
+
+        payloads = [call.args[1] for call in request.call_args_list]
+        self.assertEqual([payload["think"] for payload in payloads], [False, False])
 
     def test_vllm_embeddings_are_sorted_by_api_index(self) -> None:
         settings = AssistantSettings(
