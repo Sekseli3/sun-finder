@@ -1,4 +1,4 @@
-# Sunfinder Helsinki ☀️
+# Sunfinder Helsinki 
 
 > Find a sunny Helsinki terrace, park, or street corner before you leave.
 
