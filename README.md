@@ -1,30 +1,22 @@
-# Sunfinder Helsinki 
+# Sunfinder Helsinki
 
-> Find a sunny Helsinki terrace, park, or street corner before you leave.
+Find a sunny Helsinki terrace, park, or street corner before you leave.
 
-[**Open the live map**](https://sunfinder-helsinki.onrender.com/) · Python · FastAPI · MapLibre · local LLM and RAG experiment
+[Open the live map](https://sunfinder-helsinki.onrender.com/)
 
-> The public map runs on Render's free tier. If it has been asleep, give it up to a minute to wake up.
+The public map is on Render's free tier. It can take about a minute to wake up after a quiet period.
 
-Sunfinder combines three things that are easy to confuse:
+## Use the map
 
-| Question | What answers it | What it means |
-| --- | --- | --- |
-| Where could sun reach? | Building geometry + solar position | Clear sky potential at street level |
-| Is direct sun likely right now? | City wide weather nowcast | A one hour estimate for an open point |
-| Where should I go? | Local planner | Nearby venue notes plus deterministic ranking |
+1. Search for a place or use the map at Bar Mendocino on Eerikinkatu.
+2. Pick a time with the time controls.
+3. Move or zoom the map, then press **Load buildings here** to fetch what is on screen.
+4. Turn on **Clear sky potential** to see where the sun could reach if clouds open.
 
-## Start here
+Building shadows come from the current sun angle and the visible building footprints. The **Direct sun estimate** is a beta city wide estimate for an open point during the next hour. It is not a forecast for one terrace or street.
 
-The map starts at Bar Mendocino on Eerikinkatu. Pick a place, move through time, then refresh buildings for the part of Helsinki you can see.
-
-- **Clear sky potential** shows where sun could reach if clouds open.
-- **Direct sun estimate · beta** is a city wide hint about the next hour. It does not know what is happening above one specific street.
-- **Building shadows** are calculated from the sun angle and visible building footprints.
-
-The app is useful for planning, not surveying. Trees, small clouds, building heights, and terrace availability can still change the real answer.
-
-## Run locally
+<details>
+<summary>Run it on your computer</summary>
 
 ```sh
 python3 -m venv .venv
@@ -35,33 +27,32 @@ make run
 
 Open [http://localhost:4173](http://localhost:4173).
 
-Useful commands:
-
-| Command | What it does |
+| Command | Purpose |
 | --- | --- |
-| `make install` | Installs Python dependencies |
-| `make run` | Starts the map locally |
-| `make check` | Runs Python and browser checks |
+| `make install` | Install Python packages |
+| `make run` | Start the map |
+| `make check` | Run the Python and browser checks |
 
 <details>
-<summary>Open the local app from another device with Tailscale</summary>
+<summary>Open it from another Tailscale device</summary>
 
-Keep the service private to your tailnet by binding it to the home PC's Tailscale IP:
+Find the home PC's Tailscale address:
 
 ```sh
 tailscale ip -4
 SUNFINDER_ASSISTANT_ENABLED=1 python3 -m uvicorn backend.main:app --host <TAILSCALE_IP> --port 4173
 ```
 
-Then open `http://akselipc:4173` or `http://<TAILSCALE_IP>:4173` from your other Tailscale device. No router port forwarding is needed.
+Open `http://akselipc:4173` or `http://<TAILSCALE_IP>:4173` from another device in the same tailnet. No router port forwarding is needed.
 
 </details>
 
-## Local outing planner
+</details>
 
-The optional **Plan a sunny outing** button is a local learning project. It stays off on the public Render deployment and does not need an API key.
+<details>
+<summary>Use the local outing planner</summary>
 
-On the computer that runs Ollama:
+**Plan a sunny outing** is optional and stays off on the public site. It runs on the computer with the local model. No API key is needed.
 
 ```sh
 make assistant-setup
@@ -70,54 +61,43 @@ make assistant-index
 make assistant-run
 ```
 
-Try a request like:
+Try something like:
 
 > Outdoor coffee near Kamppi tomorrow after work
 
-The planner uses the selected map time and map centre as context. It does not train on your requests.
+The planner reads the selected map time and map centre. It does not train on requests. Python still fetches weather, loads buildings, projects shadows, measures distance, and ranks venues. Qwen only extracts the request and turns the supplied facts into a short answer.
 
-### Benchmark the planner before changing models
+<details>
+<summary>Check the planner model</summary>
 
-The fixed Helsinki intent suite gives Ollama and a future vLLM setup the same 31 requests and the same expected place, time, deadline, and venue-type fields. It does not call weather, building, or place-search APIs, so a model-serving comparison stays repeatable.
-
-```sh
-make assistant-benchmark
-```
-
-The command writes a detailed report under `.sunfinder/benchmarks/`. Run several warm passes before comparing providers:
+The fixed Helsinki suite has 31 requests. It checks place, time, deadline, and venue type without calling the weather, building, or place APIs.
 
 ```sh
 make assistant-benchmark BENCHMARK_ARGS='--repeat 3 --label ollama-warm'
 ```
 
-The terminal summary reports whole-case accuracy, field accuracy, median latency, and p95 latency. Both Ollama and vLLM disable Qwen thinking mode for this test, so the comparison measures the same fast structured-extraction task. Keep the JSON output and compare it with vLLM using the same case file and repeat count.
+The report goes to `.sunfinder/benchmarks/`. Ollama and vLLM both run without Qwen's thinking mode here, so the timing and accuracy numbers are comparable.
 
-### Optional vLLM backend
+</details>
 
-vLLM is an alternative local GPU serving engine. It changes only how the two Qwen models are served. The browser still talks to FastAPI on port `4173`, and vLLM stays private on `127.0.0.1`.
+<details>
+<summary>Try vLLM on a GPU</summary>
 
-First make a baseline while `.env` still says `SUNFINDER_LLM_PROVIDER=ollama`:
+vLLM is another way to run the same local Qwen models. It does not train Qwen or replace the Python backend. It is useful for trying GPU serving and an OpenAI compatible local API.
 
-```sh
-make assistant-benchmark BENCHMARK_ARGS='--repeat 3 --label ollama-warm'
-```
-
-On the GPU PC, install vLLM in its own environment. Keep it out of `requirements.txt`, since the public Render service does not have a GPU:
+Install it in its own environment on the GPU PC. Keep it out of `requirements.txt` because Render has no GPU.
 
 ```sh
 python3 -m venv .vllm-venv
 source .vllm-venv/bin/activate
 python3 -m pip install --upgrade pip
 python3 -m pip install vllm
-```
-
-The launcher defaults to Qwen's official 4-bit `Qwen/Qwen3-8B-AWQ` checkpoint. It keeps the same 8B model family but leaves room for vLLM's runtime cache on a 16 GB NVIDIA card. The full BF16 checkpoint is about 15.3 GB by itself and cannot run there. The chat server is capped at an 8k-token context and 72% GPU memory use so the embedding server can run beside it later. It also disables the optional FlashInfer sampler by default, which avoids needing a system CUDA toolkit and `nvcc` for this small local workload.
-
-```sh
 make vllm-chat
 ```
 
-Then switch the provider in `.env`:
+The default chat model is Qwen's 4 bit `Qwen/Qwen3-8B-AWQ`. It is the same Qwen3 8B family as the Ollama model, stored with a different 4 bit format. It fits on a 16 GB GPU. The full BF16 model alone needs about 15.3 GB, so it leaves no space to answer requests.
+
+Add this to `.env` when switching the app to vLLM:
 
 ```text
 SUNFINDER_LLM_PROVIDER=vllm
@@ -133,36 +113,34 @@ SUNFINDER_VLLM_EMBEDDING_GPU_MEMORY_UTILIZATION=0.14
 VLLM_USE_FLASHINFER_SAMPLER=0
 ```
 
-You can now run the intent benchmark against the chat server alone. This is the cleanest first comparison because it needs no embedding GPU memory:
+Check the chat server before starting embeddings:
 
 ```sh
-make assistant-benchmark BENCHMARK_ARGS='--repeat 3 --label vllm-chat-warm'
+make assistant-benchmark BENCHMARK_ARGS='--repeat 3 --label vllm-awq-warm'
 ```
 
-If that quality and latency result looks good, start the embedding server in a second terminal, rebuild the embeddings because their model fingerprint changes, then restart the FastAPI app:
+If the result looks good, open another terminal, activate `.vllm-venv`, and run `make vllm-embeddings`. Then, in the normal project environment, rebuild the venue index and start the app:
 
 ```sh
-make vllm-embeddings
 make assistant-index
 make assistant-run
 ```
 
-The launcher reserves 14% of the GPU for embeddings. If either server says it cannot fit, lower `SUNFINDER_VLLM_CHAT_GPU_MEMORY_UTILIZATION` first, for example to `0.68`, before reducing the context limit. Compare the two JSON reports under `.sunfinder/benchmarks/`. Whole-case accuracy tells you whether the planner still understands requests. Median and p95 latency show the typical and slow-tail model response time. This is only the LLM extraction benchmark, not a measurement of live building or weather API time.
+The chat server keeps 72% of the GPU and the embedding server keeps 14%. If the GPU cannot fit both, lower `SUNFINDER_VLLM_CHAT_GPU_MEMORY_UTILIZATION` first.
 
-## How one planner request moves through the app
+</details>
 
-![Animated request flow from prompt through the two Qwen models, Python facts, deterministic ranking, and the browser response](docs/request-flow.gif)
+<details>
+<summary>See how one request is handled</summary>
 
-### Two models, different jobs
+![Animated request flow from the prompt through the two Qwen models, Python facts, deterministic ranking, and the browser response](docs/request-flow.gif)
 
-| Model | Runs when | Job |
+| Model | When it runs | Job |
 | --- | --- | --- |
-| `qwen3:8b` | Once to parse, then again to write when geometry is available | Extracts place, time, and venue type, then writes a short answer from facts |
-| `qwen3-embedding:0.6b` | When building the index and when searching | Embeds venue notes once, embeds the new request, then supports cosine similarity search |
+| `qwen3:8b` | When a request is sent and when an answer is written | Finds place, time, and venue type, then writes from supplied facts |
+| `qwen3-embedding:0.6b` | When the index is built and when a request is searched | Turns venue notes and the request into vectors for similarity search |
 
-Python still owns the truth. It fetches weather, gets building geometry, projects shadows, calculates distance, and ranks venues. Qwen never fetches weather or decides a shadow result on its own.
-
-The local RAG index is intentionally small:
+The venue index is deliberately small:
 
 ```text
 venue catalogue JSON
@@ -172,60 +150,59 @@ saved vectors in .sunfinder/venue_index.json
 relevant venue notes for the answer
 ```
 
-There is no vector database yet because the catalogue has only 30 venues. A JSON vector index is faster to inspect and simpler to run locally.
+There is no vector database because the catalogue has only 30 venues. A JSON file is easy to inspect and enough for this size.
 
-<details>
-<summary>Planner failure behaviour</summary>
+If building geometry loads, Python checks projected shade now, in 30 minutes, and in 60 minutes, then combines that with distance. If geometry is missing, it only offers nearby curated places and says shade is unknown.
 
-If building geometry loads, Python ranks nearby places using projected building shade over now, +30 minutes, and +60 minutes, plus distance.
-
-If building geometry fails, the app does **not** pretend a venue has a good sun score. It ranks the closest curated places by distance and says that shade could not be confirmed.
-
-If the selected time is in the future, the map uses clear sky potential. Current weather only applies close to live time.
-
-</details>
-
-Rebuild the request-flow GIF after changing this architecture:
+Rebuild the animation after changing this flow:
 
 ```sh
 python3 scripts/build_request_flow_gif.py
 ```
 
-## Direct sun estimate · beta
+</details>
 
-The beta estimate answers one narrow question:
+</details>
+
+<details>
+<summary>Direct sun estimate and its maths</summary>
+
+The beta estimate answers one question:
 
 > Can direct sun reach an open point in Helsinki during the next hour?
 
-It is not a score for a specific terrace. The app takes estimates for now, +30 minutes, and +60 minutes, then averages them.
+It averages estimates for now, 30 minutes from now, and 60 minutes from now. It does not know about a tree, a nearby wall, a small local cloud, or a terrace opening time.
 
 | It uses | It does not know |
 | --- | --- |
-| Cloud cover, low cloud, rain chance, weather code, direct radiation, sun altitude, season | A tree, a nearby wall, a small cloud over your street, terrace opening hours |
-| One Open Meteo forecast point in central Helsinki | Whether every part of Helsinki is sunny |
-| Bayesian uncertainty in the learned model weights | Full uncertainty in the weather forecast |
+| Cloud cover, low cloud, rain chance, weather code, direct radiation, sun height, and season | Trees, nearby walls, local clouds, or terrace opening times |
+| One Open Meteo point in central Helsinki | Whether every part of Helsinki is sunny |
+| Uncertainty in the learned weights | Full uncertainty in the weather forecast |
 
-Current cloud cover and the next hour direct sun estimate can look different. For example, 96% cloud cover is the current sample. A 71% direct sun estimate is an average across current, +30 minute, and +60 minute forecast samples. Neither value belongs to a particular venue.
+Current cloud cover and the next hour estimate can differ. For example, 96% cloud cover is one current sample. A 71% direct sun estimate averages the current, 30 minute, and 60 minute forecast samples.
 
-### Training snapshot
+<details>
+<summary>Training snapshot</summary>
 
 | Item | Value |
 | --- | --- |
 | Training data | Three years of Helsinki weather reanalysis |
 | Dates | 2023-07-15 to 2026-07-13 |
-| Target | Direct normal irradiance at least 120 W/m² during daylight |
+| Target | Direct normal irradiance of at least 120 W/m² during daylight |
 | Rows | 13,257 daylight rows |
 | Train and validation split | 8,838 and 4,419 chronological rows |
 | Held out accuracy | 96.6% |
 | Held out Brier score | 0.0258 |
 | Average probability baseline | 60.5% accuracy and 0.2397 Brier score |
 
-The data comes from [Open Meteo's historical weather API](https://open-meteo.com/en/docs/historical-weather-api). These scores are useful checks, not a promise about one Helsinki street. The target and direct radiation input come from the same reanalysis source, so a future version should use FMI observations and old forecast runs.
+The data comes from [Open Meteo's historical weather API](https://open-meteo.com/en/docs/historical-weather-api). These scores are checks, not a promise about one Helsinki street. A stronger version would train against local [FMI solar radiation observations](https://en.ilmatieteenlaitos.fi/weather-observations) and validate against old forecast runs.
+
+</details>
 
 <details>
-<summary>See the direct-sun calculation</summary>
+<summary>See the direct sun calculation</summary>
 
-The model makes a score called `z`, then sends it through the sigmoid curve:
+The model makes a score called `z`, then puts it through the sigmoid curve:
 
 ```text
 chance = 1 / (1 + exp(-z))
@@ -242,7 +219,7 @@ z = -2.8533
     + 0.0689 * cos(season)
 ```
 
-Cloud, low cloud, and rain chance are fractions from 0 to 1. The radiation fraction compares forecast direct radiation with a bright-sky value for the current sun height.
+Cloud, low cloud, and rain chance are fractions from 0 to 1. The radiation fraction compares forecast direct radiation with a bright sky value for the current sun height.
 
 ```text
 direct_radiation_fraction = clamp(direct_radiation / max(25, 750 * sin(sun_altitude)))
@@ -250,14 +227,14 @@ season_sin = sin(2π * (day_of_year - 1) / 365.2425)
 season_cos = cos(2π * (day_of_year - 1) / 365.2425)
 ```
 
-For a late July example with 60% total cloud, 40% low cloud, 20% rain chance, a 35° sun, and 108 W/m² direct radiation, `z = 3.5729`. That gives a 97.3% model chance before the fog, rain, and heavy-cloud caps are applied.
+For a late July example with 60% total cloud, 40% low cloud, 20% rain chance, a 35° sun, and 108 W/m² direct radiation, `z = 3.5729`. That gives a 97.3% chance before the fog, rain, and heavy cloud caps.
 
 </details>
 
 <details>
-<summary>See the Bayesian part</summary>
+<summary>See the Bayesian model</summary>
 
-This is Bayesian logistic regression with a Laplace approximation, not an LLM.
+This is Bayesian logistic regression with a Laplace approximation. It is not an LLM.
 
 ```text
 intercept ~ Normal(0.3130, 2.5²)
@@ -266,7 +243,7 @@ each feature weight ~ Normal(0, 2.5²)
 weights | data ≈ Normal(MAP weights, inverse negative Hessian)
 ```
 
-The trainer finds MAP weights with 10 Newton steps, then uses the inverse negative Hessian as an approximate posterior covariance. For a new weather row, that gives a middle chance plus a 90% model range.
+The trainer finds MAP weights with 10 Newton steps. The inverse negative Hessian gives an approximate posterior covariance. That gives a middle probability and a 90% model range for a new weather row.
 
 ```text
 xᵀΣx = 0.0664
@@ -278,63 +255,67 @@ z | data ≈ Normal(3.5729, 0.2577²)
 = 0.9589 to 0.9820
 ```
 
-The live number averages now, +30 minutes, and +60 minutes. Those samples share model weights, so the app carries the shared covariance through the average instead of averaging three unrelated ranges.
+The live number combines now, 30 minutes from now, and 60 minutes from now while keeping the shared model uncertainty.
 
-Train again with the latest three years of data:
+Train with the latest three years:
 
 ```sh
 python3 scripts/train_direct_sun_model.py --days 1095
 ```
 
-The next worthwhile upgrade is training against local [FMI solar radiation observations](https://en.ilmatieteenlaitos.fi/weather-observations) and validating against old forecast runs.
+</details>
 
 </details>
 
-## Shadow geometry
+<details>
+<summary>Shadow geometry</summary>
 
-For a building with height `H` and sun altitude `α`, the projected shadow length is:
+For a building with height `H` and sun altitude `α`:
 
 ```text
 shadow length = H / tan(α)
 ```
 
-The app caps shadows at 560 metres so very low sun does not make huge map polygons.
+The app caps a shadow at 560 metres so low sun does not cover half the map.
 
 ```python
 shadow_length_m = min(560, building_height_m / tan(radians(sun_altitude_deg)))
 shadow_bearing_deg = (sun_azimuth_deg + 180) % 360
 ```
 
-Every footprint point is shifted by that distance and bearing. The original and shifted footprints become one convex hull polygon. A 20 metre building with a 30° sun casts a shadow of roughly 34.6 metres.
+Each footprint point moves by that distance and bearing. The original and moved footprints form a convex hull. A 20 metre building with a 30° sun gives a shadow of about 34.6 metres.
 
-## Data and endpoints
+</details>
+
+<details>
+<summary>Data, API, and code map</summary>
 
 | Data | Used for |
 | --- | --- |
-| Helsinki map tiles | Visible browser building footprints |
+| Helsinki map tiles | Browser building footprints |
 | Helsinki WFS | Python building fallback and planner geometry |
 | Open Meteo | Current sky estimate and direct sun inputs |
-| OpenStreetMap, Photon, and Nominatim | Map search and place suggestions |
+| OpenStreetMap, Photon, and Nominatim | Place search and suggestions |
 | Local venue JSON | Seed data for RAG retrieval |
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/conditions` | Sun position, current sky, and direct sun nowcast |
+| `GET /api/conditions` | Sun position, current sky, and direct sun estimate |
 | `GET /api/buildings` | Python building fallback for a map area |
-| `GET /api/place-suggestions` | Debounced place suggestions while typing |
+| `GET /api/place-suggestions` | Suggestions while typing |
 | `GET /api/places` | Submitted place or address search |
-| `GET /api/sun-planner/status` | Local Ollama planner availability |
+| `GET /api/sun-planner/status` | Local planner availability |
 | `POST /api/sun-plans` | Local planner result |
 
-## Repository guide
-
-| Path | What lives there |
+| Path | What is there |
 | --- | --- |
-| `frontend/` | MapLibre interface, browser building tiles, and local shadow projection |
+| `frontend/` | MapLibre interface, browser building tiles, and shadow projection |
 | `backend/main.py` | FastAPI routes, solar calculation, weather, and building fallback |
 | `backend/nowcast.py` | Direct sun estimate at runtime |
-| `backend/bayesian.py` | Small dependency-free Bayesian logistic regression implementation |
-| `backend/sun_planner.py` | Ollama client, RAG index, and planner ranking helpers |
-| `backend/venue_data/` | Curated venue notes for the local RAG experiment |
-| `scripts/train_direct_sun_model.py` | Rebuilds the Bayesian nowcast artifact |
+| `backend/bayesian.py` | Bayesian logistic regression |
+| `backend/sun_planner.py` | Model client, RAG index, and planner ranking |
+| `backend/venue_data/` | Curated venue notes |
+| `scripts/train_direct_sun_model.py` | Rebuilds the nowcast model artifact |
 | `scripts/build_request_flow_gif.py` | Rebuilds the README animation |
+
+</details>
