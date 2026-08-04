@@ -8,15 +8,15 @@ The public map is on Render's free tier. It can take about a minute to wake up a
 
 ## Use the map
 
-1. Search for a place or use the map at Bar Mendocino on Eerikinkatu.
-2. Pick a time with the time controls.
-3. Move or zoom the map, then press **Load buildings here** to fetch what is on screen.
-4. Turn on **Clear sky potential** to see where the sun could reach if clouds open.
+1. Search for a place or start from Bar Mendocino on Eerikinkatu.
+2. Select a time with the time controls.
+3. Pan or zoom the map, then press **Load buildings here** for the visible area.
+4. Enable **Clear sky potential** to show where the sun could reach if clouds open.
 
 Building shadows come from the current sun angle and the visible building footprints. The **Direct sun estimate** is a beta city wide estimate for an open point during the next hour. It is not a forecast for one terrace or street.
 
 <details>
-<summary>Run it on your computer</summary>
+<summary>Local setup</summary>
 
 ```sh
 python3 -m venv .venv
@@ -25,7 +25,7 @@ python3 -m pip install -r requirements.txt
 make run
 ```
 
-Open [http://localhost:4173](http://localhost:4173).
+Local address: [http://localhost:4173](http://localhost:4173).
 
 | Command | Purpose |
 | --- | --- |
@@ -34,23 +34,23 @@ Open [http://localhost:4173](http://localhost:4173).
 | `make check` | Run the Python and browser checks |
 
 <details>
-<summary>Open it from another Tailscale device</summary>
+<summary>Tailscale access</summary>
 
-Find the home PC's Tailscale address:
+Home PC Tailscale address:
 
 ```sh
 tailscale ip -4
 SUNFINDER_ASSISTANT_ENABLED=1 python3 -m uvicorn backend.main:app --host <TAILSCALE_IP> --port 4173
 ```
 
-Open `http://akselipc:4173` or `http://<TAILSCALE_IP>:4173` from another device in the same tailnet. No router port forwarding is needed.
+Access it from another device in the same tailnet at `http://akselipc:4173` or `http://<TAILSCALE_IP>:4173`. Router port forwarding is not needed.
 
 </details>
 
 </details>
 
 <details>
-<summary>Use the local outing planner</summary>
+<summary>Local outing planner</summary>
 
 **Plan a sunny outing** is optional and stays off on the public site. It runs on the computer with the local model. No API key is needed.
 
@@ -61,14 +61,14 @@ make assistant-index
 make assistant-run
 ```
 
-Try something like:
+Example request:
 
 > Outdoor coffee near Kamppi tomorrow after work
 
 The planner reads the selected map time and map centre. It does not train on requests. Python still fetches weather, loads buildings, projects shadows, measures distance, and ranks venues. Qwen only extracts the request and turns the supplied facts into a short answer.
 
 <details>
-<summary>Check the planner model</summary>
+<summary>Model benchmark</summary>
 
 The fixed Helsinki suite has 31 requests. It checks place, time, deadline, and venue type without calling the weather, building, or place APIs.
 
@@ -81,11 +81,11 @@ The report goes to `.sunfinder/benchmarks/`. Ollama and vLLM both run without Qw
 </details>
 
 <details>
-<summary>Try vLLM on a GPU</summary>
+<summary>vLLM setup</summary>
 
-vLLM is another way to run the same local Qwen models. It does not train Qwen or replace the Python backend. It is useful for trying GPU serving and an OpenAI compatible local API.
+vLLM serves the same local Qwen models through a GPU API. It does not train Qwen or replace the Python backend. Its value here is GPU serving and an OpenAI compatible local API.
 
-Install it in its own environment on the GPU PC. Keep it out of `requirements.txt` because Render has no GPU.
+Installation belongs in its own environment on the GPU PC. It stays out of `requirements.txt` because Render has no GPU.
 
 ```sh
 python3 -m venv .vllm-venv
@@ -97,7 +97,7 @@ make vllm-chat
 
 The default chat model is Qwen's 4 bit `Qwen/Qwen3-8B-AWQ`. It is the same Qwen3 8B family as the Ollama model, stored with a different 4 bit format. It fits on a 16 GB GPU. The full BF16 model alone needs about 15.3 GB, so it leaves no space to answer requests.
 
-Add this to `.env` when switching the app to vLLM:
+Required `.env` settings for vLLM:
 
 ```text
 SUNFINDER_LLM_PROVIDER=vllm
@@ -113,13 +113,13 @@ SUNFINDER_VLLM_EMBEDDING_GPU_MEMORY_UTILIZATION=0.14
 VLLM_USE_FLASHINFER_SAMPLER=0
 ```
 
-Check the chat server before starting embeddings:
+Chat server benchmark:
 
 ```sh
 make assistant-benchmark BENCHMARK_ARGS='--repeat 3 --label vllm-awq-warm'
 ```
 
-If the result looks good, open another terminal, activate `.vllm-venv`, and run `make vllm-embeddings`. Then, in the normal project environment, rebuild the venue index and start the app:
+After the chat benchmark, start the embedding server in another terminal with `.vllm-venv` active. In the normal project environment, rebuild the venue index and start the app:
 
 ```sh
 make assistant-index
@@ -131,7 +131,7 @@ The chat server keeps 72% of the GPU and the embedding server keeps 14%. If the 
 </details>
 
 <details>
-<summary>See how one request is handled</summary>
+<summary>Request flow</summary>
 
 ![Animated request flow from the prompt through the two Qwen models, Python facts, deterministic ranking, and the browser response](docs/request-flow.gif)
 
@@ -150,11 +150,11 @@ saved vectors in .sunfinder/venue_index.json
 relevant venue notes for the answer
 ```
 
-There is no vector database because the catalogue has only 30 venues. A JSON file is easy to inspect and enough for this size.
+The project uses no vector database because the catalogue has only 30 venues. A JSON file is easy to inspect and sufficient at this size.
 
 If building geometry loads, Python checks projected shade now, in 30 minutes, and in 60 minutes, then combines that with distance. If geometry is missing, it only offers nearby curated places and says shade is unknown.
 
-Rebuild the animation after changing this flow:
+Animation rebuild command:
 
 ```sh
 python3 scripts/build_request_flow_gif.py
@@ -165,9 +165,9 @@ python3 scripts/build_request_flow_gif.py
 </details>
 
 <details>
-<summary>Direct sun estimate and its maths</summary>
+<summary>Direct sun estimate</summary>
 
-The beta estimate answers one question:
+The beta estimate covers one question:
 
 > Can direct sun reach an open point in Helsinki during the next hour?
 
@@ -200,9 +200,9 @@ The data comes from [Open Meteo's historical weather API](https://open-meteo.com
 </details>
 
 <details>
-<summary>See the direct sun calculation</summary>
+<summary>Direct sun calculation</summary>
 
-The model makes a score called `z`, then puts it through the sigmoid curve:
+The model calculates a score `z` and maps it through the sigmoid curve:
 
 ```text
 chance = 1 / (1 + exp(-z))
@@ -232,7 +232,7 @@ For a late July example with 60% total cloud, 40% low cloud, 20% rain chance, a 
 </details>
 
 <details>
-<summary>See the Bayesian model</summary>
+<summary>Bayesian model</summary>
 
 This is Bayesian logistic regression with a Laplace approximation. It is not an LLM.
 
@@ -257,7 +257,7 @@ z | data ≈ Normal(3.5729, 0.2577²)
 
 The live number combines now, 30 minutes from now, and 60 minutes from now while keeping the shared model uncertainty.
 
-Train with the latest three years:
+Training command for the latest three years:
 
 ```sh
 python3 scripts/train_direct_sun_model.py --days 1095
@@ -288,7 +288,7 @@ Each footprint point moves by that distance and bearing. The original and moved 
 </details>
 
 <details>
-<summary>Data, API, and code map</summary>
+<summary>Data, API, and repository</summary>
 
 | Data | Used for |
 | --- | --- |
