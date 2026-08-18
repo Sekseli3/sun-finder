@@ -33,20 +33,6 @@ Local address: [http://localhost:4173](http://localhost:4173).
 | `make run` | Start the map |
 | `make check` | Run the Python and browser checks |
 
-<details>
-<summary>Tailscale access</summary>
-
-Home PC Tailscale address:
-
-```sh
-tailscale ip -4
-SUNFINDER_ASSISTANT_ENABLED=1 python3 -m uvicorn backend.main:app --host <TAILSCALE_IP> --port 4173
-```
-
-Access it from another device in the same tailnet at `http://akselipc:4173` or `http://<TAILSCALE_IP>:4173`. Router port forwarding is not needed.
-
-</details>
-
 </details>
 
 <details>
