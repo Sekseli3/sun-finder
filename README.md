@@ -286,6 +286,19 @@ python3 scripts/train_direct_sun_model.py --days 1095
 </details>
 
 <details>
+<summary>Practical next improvements</summary>
+
+1. Filter Qdrant by the resolved map location and venue type before vector search. A request near Kamppi should send a geo radius around Kamppi and a `bar` or `cafe` filter to Qdrant. Similarity can then rank only plausible nearby places. The sun calculation remains the final ranking signal.
+
+2. Build a proper evaluation set from real planner requests. Keep the set fixed and label the intended area, time, venue type, and whether each returned place is close enough and suitable. Track intent accuracy, retrieval recall at 4, sun ranking quality, invented claims, and response time. Run it before changing prompts, models, retrieval, or ranking.
+
+3. Run the local models as a separate service when other people use the app. vLLM can stay on a GPU machine while the Python app calls its chat and embedding endpoints over a private network. Add authentication, request limits, and a health check before exposing those endpoints outside a private network. The public Render app should keep its non LLM fallback unless it can reach that service safely.
+
+4. Add better venue facts from sources that can be checked regularly. Opening hours, confirmed terrace details, accessibility, and seasonal status should be structured fields with their source and update time. They should not be guessed from an embedding or written as facts by the chat model.
+
+</details>
+
+<details>
 <summary>Shadow geometry</summary>
 
 For a building with height `H` and sun altitude `α`:
