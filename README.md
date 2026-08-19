@@ -38,7 +38,7 @@ Local address: [http://localhost:4173](http://localhost:4173).
 <details>
 <summary>Local outing planner</summary>
 
-**Plan a sunny outing** is optional and stays off on the public site. It runs on the computer with the local model. No API key is needed.
+**Plan a sunny outing** is optional and stays off on the public site. It is available when the server has access to a compatible local model. No API key is needed.
 
 ```sh
 make assistant-setup
@@ -58,9 +58,9 @@ The planner reads the selected map time and map centre. It does not train on req
 
 The default planner uses a small curated JSON catalogue. This optional import replaces it with a local Qdrant collection populated from named OpenStreetMap venues in Helsinki.
 
-Included OpenStreetMap categories are `cafe`, `restaurant`, `bar`, `pub`, and `biergarten`. Coverage depends on OpenStreetMap mapping. The import keeps an untracked source snapshot at `.sunfinder/helsinki_osm_venues.json` for inspection.
+Included OpenStreetMap categories are `cafe`, `restaurant`, `bar`, `pub`, and `biergarten`. Coverage depends on OpenStreetMap mapping. The importer also saves a source snapshot for inspection.
 
-Install project packages, start Qdrant in one terminal, then keep it running:
+This setup requires Docker and enough CPU, memory, and GPU resources for the selected embedding model. Install project packages, then start Qdrant and keep it running:
 
 ```sh
 make install
@@ -75,7 +75,7 @@ SUNFINDER_QDRANT_URL=http://127.0.0.1:6333
 SUNFINDER_QDRANT_COLLECTION=sunfinder_helsinki_venues
 ```
 
-With Ollama or the vLLM embedding server running, import and embed the venues in another terminal:
+With Ollama or the vLLM embedding server available, import and embed the venues:
 
 ```sh
 make assistant-import-venues
@@ -101,9 +101,9 @@ The report goes to `.sunfinder/benchmarks/`. Ollama and vLLM both run without Qw
 <details>
 <summary>vLLM setup</summary>
 
-vLLM serves the same local Qwen models through a GPU API. It does not train Qwen or replace the Python backend. Its value here is GPU serving and an OpenAI compatible local API.
+vLLM serves the same local Qwen models through a GPU API. It does not train Qwen or replace the Python backend. It requires a computer with a supported NVIDIA GPU and enough VRAM for the chosen model.
 
-Installation belongs in its own environment on the GPU PC. It stays out of `requirements.txt` because Render has no GPU.
+Installation belongs in its own environment. It stays out of `requirements.txt` because Render has no GPU.
 
 ```sh
 python3 -m venv .vllm-venv
