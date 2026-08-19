@@ -54,6 +54,38 @@ Example request:
 The planner reads the selected map time and map centre. It does not train on requests. Python still fetches weather, loads buildings, projects shadows, measures distance, and ranks venues. Qwen only extracts the request and turns the supplied facts into a short answer.
 
 <details>
+<summary>Qdrant index for Helsinki cafés, restaurants, and bars</summary>
+
+The default planner uses a small curated JSON catalogue. This optional import replaces it with a local Qdrant collection populated from named OpenStreetMap venues in Helsinki.
+
+Included OpenStreetMap categories are `cafe`, `restaurant`, `bar`, `pub`, and `biergarten`. Coverage depends on OpenStreetMap mapping. The import keeps an untracked source snapshot at `.sunfinder/helsinki_osm_venues.json` for inspection.
+
+Install project packages, start Qdrant in one terminal, then keep it running:
+
+```sh
+make install
+make qdrant-up
+```
+
+Set this in `.env`:
+
+```text
+SUNFINDER_QDRANT_ENABLED=true
+SUNFINDER_QDRANT_URL=http://127.0.0.1:6333
+SUNFINDER_QDRANT_COLLECTION=sunfinder_helsinki_venues
+```
+
+With Ollama or the vLLM embedding server running, import and embed the venues in another terminal:
+
+```sh
+make assistant-import-venues
+```
+
+Restart `make assistant-run` after the import. The planner status endpoint reports `catalogue_source: qdrant` when the database is in use. If Qdrant is stopped, the app uses the small seed catalogue instead.
+
+</details>
+
+<details>
 <summary>Model benchmark</summary>
 
 The fixed Helsinki suite has 31 requests. It checks place, time, deadline, and venue type without calling the weather, building, or place APIs.
@@ -124,19 +156,19 @@ The chat server keeps 72% of the GPU and the embedding server keeps 14%. If the 
 | Model | When it runs | Job |
 | --- | --- | --- |
 | `qwen3:8b` | When a request is sent and when an answer is written | Finds place, time, and venue type, then writes from supplied facts |
-| `qwen3-embedding:0.6b` | When the index is built and when a request is searched | Turns venue notes and the request into vectors for similarity search |
+| `qwen3-embedding:0.6b` | During import and request search | Turns venue records and the request into vectors for similarity search |
 
-The venue index is deliberately small:
+With the seed catalogue, vectors are stored in a local JSON file. With Qdrant enabled, vectors and venue payloads are stored in the `sunfinder_helsinki_venues` collection:
 
 ```text
-venue catalogue JSON
+OpenStreetMap venue import
         ↓  qwen3-embedding:0.6b
-saved vectors in .sunfinder/venue_index.json
+Qdrant vectors and venue payloads
         ↓  cosine similarity
 relevant venue notes for the answer
 ```
 
-The project uses no vector database because the catalogue has only 30 venues. A JSON file is easy to inspect and sufficient at this size.
+Qdrant is useful once the index contains thousands of Helsinki venues. The seed JSON file remains the fallback for the public deployment and local work without Docker.
 
 If building geometry loads, Python checks projected shade now, in 30 minutes, and in 60 minutes, then combines that with distance. If geometry is missing, it only offers nearby curated places and says shade is unknown.
 

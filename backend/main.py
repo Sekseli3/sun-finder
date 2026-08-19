@@ -27,6 +27,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.nowcast import direct_sun_nowcast, unavailable_direct_sun_nowcast
+from backend.qdrant_venues import QdrantSettings, QdrantUnavailableError, QdrantVenueRetriever
 from backend.sun_planner import (
     AssistantSettings,
     OllamaUnavailableError,
@@ -95,6 +96,20 @@ venue_retriever = VenueRetriever(
     index_path=LOCAL_VENUE_INDEX_PATH,
     client=assistant_client,
 )
+venue_catalogue_source = "seed-json"
+qdrant_settings = QdrantSettings.from_environment()
+if qdrant_settings.enabled:
+    try:
+        qdrant_venue_retriever = QdrantVenueRetriever(settings=qdrant_settings, client=assistant_client)
+        qdrant_catalogue = qdrant_venue_retriever.venues()
+        if qdrant_catalogue:
+            venue_catalogue = qdrant_catalogue
+            venue_retriever = qdrant_venue_retriever
+            venue_catalogue_source = "qdrant"
+    except QdrantUnavailableError:
+        # The planner is still useful with the curated seed catalogue when the
+        # optional database is stopped or has not been imported yet.
+        venue_catalogue_source = "seed-json-fallback"
 
 
 @dataclass(frozen=True)
@@ -1305,6 +1320,7 @@ async def sun_planner_status() -> dict[str, Any]:
         "ready": True,
         "provider": assistant_settings.provider,
         "catalogue_size": len(venue_catalogue),
+        "catalogue_source": venue_catalogue_source,
         "chat_model": assistant_settings.chat_model,
         "embedding_model": assistant_settings.embedding_model,
     }
@@ -1413,22 +1429,23 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
             retrieved_documents = await asyncio.to_thread(venue_retriever.search, request.message)
             retrieved_scores = {document.venue_id: document.score for document in retrieved_documents}
             venues_by_id = {venue.venue_id: venue for venue, _ in nearby_venues}
-            source_documents = [
-                RetrievedVenueDocument(
-                    venue_id=recommendation["venue"]["id"],
-                    score=retrieved_scores.get(recommendation["venue"]["id"], 1.0),
-                    text="\n".join(
-                        (
-                            recommendation["venue"]["name"],
-                            f"Area: {recommendation['venue']['area']}",
-                            f"Type: {venues_by_id[recommendation['venue']['id']].kind}",
-                        )
-                    ),
-                    source_label=recommendation["venue"]["source"]["label"],
-                    source_url=recommendation["venue"]["source"]["url"],
+            source_documents = []
+            for recommendation in recommendations:
+                venue_id = recommendation["venue"]["id"]
+                retrieved = next((document for document in retrieved_documents if document.venue_id == venue_id), None)
+                venue = venues_by_id[venue_id]
+                source_documents.append(
+                    RetrievedVenueDocument(
+                        venue_id=venue_id,
+                        score=retrieved.score if retrieved is not None else retrieved_scores.get(venue_id, 1.0),
+                        # Qdrant decides relevance. The answer model receives
+                        # only source-backed identity data, never freeform OSM
+                        # notes that could look like a claim about availability.
+                        text="\n".join((venue.name, f"Area: {venue.area}", f"Type: {venue.kind}")),
+                        source_label=venue.source_label,
+                        source_url=venue.source_url,
+                    )
                 )
-                for recommendation in recommendations
-            ]
             response_facts = planner_language_facts(
                 anchor=anchor,
                 planned_time=planned_time,
@@ -1481,6 +1498,7 @@ async def sun_plans(request: SunPlanRequest) -> dict[str, Any]:
             "building_geometry_available": building_geometry_available,
             "plan_mode": plan_mode,
             "catalogue_size": len(venue_catalogue),
+            "catalogue_source": venue_catalogue_source,
             "candidate_count": len(nearby_venues),
         },
     }

@@ -1,4 +1,4 @@
-.PHONY: install run test check assistant-setup assistant-index assistant-run assistant-benchmark vllm-chat vllm-embeddings
+.PHONY: install run test check assistant-setup assistant-index assistant-import-venues assistant-run assistant-benchmark qdrant-up vllm-chat vllm-embeddings
 
 install:
 	python3 -m pip install -r requirements.txt
@@ -12,6 +12,13 @@ assistant-setup:
 
 assistant-index:
 	SUNFINDER_ASSISTANT_ENABLED=1 python3 scripts/build_venue_index.py
+
+assistant-import-venues:
+	SUNFINDER_ASSISTANT_ENABLED=1 python3 scripts/import_helsinki_venues.py
+
+qdrant-up:
+	mkdir -p .sunfinder/qdrant
+	docker run --rm --name sunfinder-qdrant -p 127.0.0.1:6333:6333 -v "$$(pwd)/.sunfinder/qdrant:/qdrant/storage" qdrant/qdrant
 
 assistant-run:
 	SUNFINDER_ASSISTANT_ENABLED=1 python3 -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 4173

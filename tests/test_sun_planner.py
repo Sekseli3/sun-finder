@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from backend.osm_venues import parse_overpass_venues
+from backend.qdrant_venues import qdrant_point_id, venue_from_payload, venue_payload
 from backend.sun_planner import (
     AssistantSettings,
     OllamaClient,
@@ -83,6 +85,44 @@ class SunPlannerTests(unittest.TestCase):
         self.assertGreaterEqual(len(venues), 30)
         self.assertEqual(venues[0].name, "Bar Mendocino")
         self.assertTrue(venues[0].source_url.startswith("https://"))
+
+    def test_osm_import_keeps_named_food_and_drink_venues_with_way_centres(self) -> None:
+        payload = {
+            "elements": [
+                {
+                    "type": "node",
+                    "id": 10,
+                    "lat": 60.17,
+                    "lon": 24.94,
+                    "tags": {"name": "Coffee Spot", "amenity": "cafe", "outdoor_seating": "yes"},
+                },
+                {
+                    "type": "way",
+                    "id": 11,
+                    "center": {"lat": 60.18, "lon": 24.95},
+                    "tags": {"name": "Dinner Spot", "amenity": "restaurant", "cuisine": "finnish"},
+                },
+                {"type": "node", "id": 12, "lat": 60.19, "lon": 24.96, "tags": {"amenity": "bar"}},
+                {"type": "node", "id": 13, "lat": 60.19, "lon": 24.96, "tags": {"name": "Shop", "amenity": "pharmacy"}},
+            ]
+        }
+
+        venues = parse_overpass_venues(payload)
+
+        self.assertEqual([venue.name for venue in venues], ["Coffee Spot", "Dinner Spot"])
+        self.assertEqual(venues[0].venue_id, "osm:node:10")
+        self.assertEqual(venues[1].latitude, 60.18)
+        self.assertIn("finnish", venues[1].kind)
+        self.assertIn("outdoor", venues[0].terrace_note.casefold())
+
+    def test_qdrant_payload_round_trip_preserves_venue_and_has_stable_uuid(self) -> None:
+        payload = venue_payload(self.venues[0])
+
+        restored = venue_from_payload(payload)
+
+        self.assertEqual(restored, self.venues[0])
+        self.assertEqual(qdrant_point_id("sunny-cafe"), qdrant_point_id("sunny-cafe"))
+        self.assertNotEqual(qdrant_point_id("sunny-cafe"), qdrant_point_id("shaded-bar"))
 
     def test_nearby_venues_are_sorted_and_limited_to_the_radius(self) -> None:
         nearby = venues_near(self.venues, 60.1700, 24.9400, radius_meters=100)
